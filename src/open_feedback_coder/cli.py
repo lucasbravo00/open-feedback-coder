@@ -14,8 +14,18 @@ from .llm import Client, ConfigError, ModelError
 DEFAULT_MAX_THEMES = 15
 
 
-def _log(message: str = "") -> None:
-    print(message, file=sys.stderr)
+def _log(message: str = "", end: str = "\n") -> None:
+    """Write progress to stderr, and never let that be why a run dies.
+
+    If whatever was reading stderr goes away mid-run - a pipe into `head`, a
+    closed terminal - the model calls have already been made and paid for.
+    Losing the output files over a failed progress message would be the worst
+    possible response to that.
+    """
+    try:
+        print(message, file=sys.stderr, end=end, flush=True)
+    except (BrokenPipeError, OSError, ValueError):
+        pass
 
 
 def _positive_int(value: str) -> int:
@@ -188,7 +198,7 @@ def command_label(args) -> int:
 
     def progress(done: int, total: int) -> None:
         if done == total or done % 25 == 0:
-            print(f"  labelled {done:,}/{total:,}", end="\r", file=sys.stderr, flush=True)
+            _log(f"  labelled {done:,}/{total:,}", end="\r")
 
     run = label_step.label_comments(
         comments, book, client, concurrency=args.concurrency, on_progress=progress

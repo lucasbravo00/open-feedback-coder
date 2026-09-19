@@ -17,7 +17,7 @@ dependencies = [
 ui = ["streamlit>=1.36"]
 
 [dependency-groups]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=8.0", "streamlit>=1.36"]
 
 [project.scripts]
 ofc = "open_feedback_coder.cli:main"

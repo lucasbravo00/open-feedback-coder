@@ -1,8 +1,15 @@
-"""Reading the input CSV and writing the two output CSVs."""
+"""Reading the input CSV and writing the two output CSVs.
+
+The reader is split in two so that a file on disk and a file uploaded to the
+web interface go through exactly the same code. They used to be separate
+implementations, which is how the two paths came to disagree about what
+counts as a placeholder answer.
+"""
 
 from __future__ import annotations
 
 import csv
+import io
 import sys
 from dataclasses import dataclass, field
 
@@ -14,6 +21,8 @@ from .text import canonicalise
 PLACEHOLDER_ANSWERS = frozenset(
     {"n/a", "n.a.", "na", "none", "nil", "null", "-", "--", ".", "?", "blank", "<blank>"}
 )
+
+DEFAULT_ENCODING = "utf-8-sig"
 
 OUTPUT_COLUMNS = [
     "comment_id",
@@ -65,66 +74,110 @@ class SkipReport:
         return self.empty + self.placeholder
 
 
+def decode_document(source, encoding: str = DEFAULT_ENCODING) -> str:
+    """Return the text of an in-memory document, leaving it usable afterwards.
+
+    Written for the file object a web upload produces, which is handed back
+    unchanged on every rerun of the page. Wrapping such an object in an
+    io.TextIOWrapper closes the underlying buffer as soon as the wrapper is
+    collected, so the next read of the same upload fails; reading the bytes
+    once and decoding them does not.
+    """
+    raw = source.getvalue() if hasattr(source, "getvalue") else source.read()
+    if isinstance(raw, str):
+        return raw
+    return raw.decode(encoding)
+
+
+def column_names(text: str, delimiter: str = ",") -> list[str]:
+    """Return the header of a delimited document, ignoring blank names."""
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+    try:
+        header = next(reader)
+    except StopIteration:
+        return []
+    return [name for name in header if name]
+
+
+def read_comments_from_text(
+    text: str,
+    text_column: str,
+    id_column: str | None = None,
+    delimiter: str = ",",
+    origin: str = "input",
+) -> tuple[list[Comment], SkipReport]:
+    """Read open-ended answers from the contents of a delimited document.
+
+    `row_number` counts data rows starting at 1, ignoring the header, and is
+    also used as the comment id when `id_column` is not given. Skipped rows
+    still consume a row number, so a number always points at the same line of
+    the original file.
+    """
+    reader = csv.DictReader(io.StringIO(text, newline=""), delimiter=delimiter)
+    if reader.fieldnames is None:
+        raise InputError(f"{origin} is empty.")
+
+    available = [name for name in reader.fieldnames if name is not None]
+    for wanted, flag in ((text_column, "--text-column"), (id_column, "--id-column")):
+        if wanted is not None and wanted not in available:
+            raise InputError(
+                f"Column {wanted!r} ({flag}) not found in {origin}.\n"
+                f"Available columns: {', '.join(repr(name) for name in available)}"
+            )
+
+    comments: list[Comment] = []
+    skipped = SkipReport()
+
+    for row_number, row in enumerate(reader, start=1):
+        value = canonicalise(row.get(text_column) or "").strip()
+
+        if not value:
+            skipped.empty += 1
+            continue
+        if value.lower() in PLACEHOLDER_ANSWERS:
+            skipped.placeholder += 1
+            key = value.lower()
+            skipped.placeholder_values[key] = skipped.placeholder_values.get(key, 0) + 1
+            continue
+
+        if id_column is None:
+            comment_id = str(row_number)
+        else:
+            comment_id = canonicalise(row.get(id_column) or "").strip() or str(row_number)
+
+        comments.append(Comment(comment_id=comment_id, row_number=row_number, text=value))
+
+    return comments, skipped
+
+
 def read_comments(
     path: str,
     text_column: str,
     id_column: str | None = None,
     delimiter: str = ",",
-    encoding: str = "utf-8-sig",
+    encoding: str = DEFAULT_ENCODING,
 ) -> tuple[list[Comment], SkipReport]:
-    """Read open-ended answers from a delimited text file.
-
-    `row_number` counts data rows starting at 1, ignoring the header, and is
-    also used as the comment id when `id_column` is not given.
-    """
+    """Read open-ended answers from a delimited file on disk."""
     try:
-        handle = open(path, newline="", encoding=encoding)
+        with open(path, newline="", encoding=encoding) as handle:
+            text = handle.read()
     except FileNotFoundError as error:
         raise InputError(f"Input file not found: {path}") from error
     except LookupError as error:
         raise InputError(f"Unknown encoding: {encoding}") from error
+    except UnicodeDecodeError as error:
+        raise InputError(
+            f"{path} is not valid {encoding}: {error}. Pass --encoding with the "
+            "encoding the file was written in."
+        ) from error
 
-    comments: list[Comment] = []
-    skipped = SkipReport()
-
-    with handle:
-        reader = csv.DictReader(handle, delimiter=delimiter)
-        if reader.fieldnames is None:
-            raise InputError(f"Input file is empty: {path}")
-
-        available = [name for name in reader.fieldnames if name is not None]
-        if text_column not in available:
-            raise InputError(
-                f"Column {text_column!r} not found in {path}.\n"
-                f"Available columns: {', '.join(repr(name) for name in available)}"
-            )
-        if id_column is not None and id_column not in available:
-            raise InputError(
-                f"Column {id_column!r} not found in {path}.\n"
-                f"Available columns: {', '.join(repr(name) for name in available)}"
-            )
-
-        for row_number, row in enumerate(reader, start=1):
-            raw = row.get(text_column) or ""
-            text = canonicalise(raw).strip()
-
-            if not text:
-                skipped.empty += 1
-                continue
-            if text.strip().lower() in PLACEHOLDER_ANSWERS:
-                skipped.placeholder += 1
-                key = text.strip().lower()
-                skipped.placeholder_values[key] = skipped.placeholder_values.get(key, 0) + 1
-                continue
-
-            if id_column is None:
-                comment_id = str(row_number)
-            else:
-                comment_id = canonicalise(row.get(id_column) or "").strip() or str(row_number)
-
-            comments.append(Comment(comment_id=comment_id, row_number=row_number, text=text))
-
-    return comments, skipped
+    return read_comments_from_text(
+        text,
+        text_column=text_column,
+        id_column=id_column,
+        delimiter=delimiter,
+        origin=path,
+    )
 
 
 def write_rows(path: str | None, columns: list[str], rows: list[dict]) -> None:

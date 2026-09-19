@@ -1,9 +1,9 @@
 """Streamlit front end for open-feedback-coder.
 
-The same functions the command line uses are called here, so the checks and
-the guarantees are identical: the codebook is edited by a person before any
-labelling happens, and a label whose quote cannot be found in its comment is
-excluded from the results and listed separately.
+Reading the CSV, validating the edited codebook, proposing and labelling all
+go through the same functions the command line uses, so the two interfaces
+cannot drift apart on what a placeholder answer is, what a valid theme id is,
+or when a quote counts as verified.
 
 Run with:  uv run --extra ui streamlit run app.py
 """
@@ -19,59 +19,22 @@ import streamlit as st
 
 from open_feedback_coder import label as label_step, propose as propose_step
 from open_feedback_coder.budget import TokenCounter
-from open_feedback_coder.codebook import CodebookError, from_dict, to_yaml
+from open_feedback_coder.codebook import CodebookError, to_yaml
 from open_feedback_coder.csv_io import (
     FAILURE_COLUMNS,
     OUTPUT_COLUMNS,
-    PLACEHOLDER_ANSWERS,
-    Comment,
-    SkipReport,
+    InputError,
+    column_names,
+    decode_document,
+    read_comments_from_text,
 )
+from open_feedback_coder.editing import codebook_from_records
 from open_feedback_coder.llm import Client, ConfigError, ModelError
-from open_feedback_coder.text import canonicalise
 
 st.set_page_config(page_title="open-feedback-coder", layout="wide")
 
 DEFAULT_MAX_THEMES = 15
-
-
-def read_uploaded(upload, text_column: str, id_column: str | None, delimiter: str):
-    """Read comments from an uploaded file, mirroring csv_io.read_comments."""
-    upload.seek(0)
-    text = io.TextIOWrapper(upload, encoding="utf-8-sig", newline="")
-    reader = csv.DictReader(text, delimiter=delimiter)
-
-    comments: list[Comment] = []
-    skipped = SkipReport()
-
-    for row_number, row in enumerate(reader, start=1):
-        value = canonicalise(row.get(text_column) or "").strip()
-        if not value:
-            skipped.empty += 1
-            continue
-        if value.lower() in PLACEHOLDER_ANSWERS:
-            skipped.placeholder += 1
-            key = value.lower()
-            skipped.placeholder_values[key] = skipped.placeholder_values.get(key, 0) + 1
-            continue
-
-        comment_id = str(row_number)
-        if id_column:
-            comment_id = canonicalise(row.get(id_column) or "").strip() or str(row_number)
-
-        comments.append(Comment(comment_id=comment_id, row_number=row_number, text=value))
-
-    return comments, skipped
-
-
-def column_names(upload, delimiter: str) -> list[str]:
-    upload.seek(0)
-    text = io.TextIOWrapper(upload, encoding="utf-8-sig", newline="")
-    reader = csv.reader(text, delimiter=delimiter)
-    try:
-        return [name for name in next(reader) if name]
-    except StopIteration:
-        return []
+DELIMITER_LABELS = {",": "comma", ";": "semicolon", "\t": "tab", "|": "pipe"}
 
 
 def rows_to_csv(columns: list[str], rows: list[dict]) -> str:
@@ -82,12 +45,9 @@ def rows_to_csv(columns: list[str], rows: list[dict]) -> str:
     return buffer.getvalue()
 
 
-def get_client(model_override: str | None) -> Client | None:
-    try:
-        return Client(model=model_override or None)
-    except ConfigError as error:
-        st.error(str(error))
-        return None
+def forget(*keys: str) -> None:
+    for key in keys:
+        st.session_state.pop(key, None)
 
 
 st.title("open-feedback-coder")
@@ -114,12 +74,23 @@ with st.sidebar:
 st.subheader("1. Load comments")
 
 upload = st.file_uploader("CSV file", type=["csv", "tsv", "txt"])
-delimiter = st.selectbox("Delimiter", options=[",", ";", "\t"], format_func=lambda d: {",": "comma", ";": "semicolon", "\t": "tab"}[d])
+delimiter = st.selectbox(
+    "Delimiter", options=list(DELIMITER_LABELS), format_func=DELIMITER_LABELS.get
+)
 
 if upload is None:
     st.stop()
 
-available = column_names(upload, delimiter)
+try:
+    document = decode_document(upload)
+except UnicodeDecodeError:
+    st.error(
+        "This file is not UTF-8. Re-export it as UTF-8, or use the command "
+        "line, which takes an --encoding option."
+    )
+    st.stop()
+
+available = column_names(document, delimiter)
 if not available:
     st.error("No columns found. Check the delimiter.")
     st.stop()
@@ -128,26 +99,35 @@ left, right = st.columns(2)
 with left:
     text_column = st.selectbox("Column with the open-ended answers", options=available)
 with right:
-    id_column = st.selectbox("Comment id column (optional)", options=["(row number)"] + available)
-id_column = None if id_column == "(row number)" else id_column
+    chosen_id = st.selectbox("Comment id column (optional)", options=["(row number)"] + available)
+id_column = None if chosen_id == "(row number)" else chosen_id
 
-comments, skipped = read_uploaded(upload, text_column, id_column, delimiter)
+try:
+    comments, skipped = read_comments_from_text(
+        document,
+        text_column=text_column,
+        id_column=id_column,
+        delimiter=delimiter,
+        origin="the uploaded file",
+    )
+except InputError as error:
+    st.error(str(error))
+    st.stop()
 
-# A proposal and a set of results only mean anything for the corpus they were
+# A proposal and a set of results mean something only for the corpus they were
 # computed from. Streamlit reruns the whole script on every interaction and
-# keeps session state across those reruns, so without this the page would go
+# carries session state across those reruns, so without this the page would go
 # on showing an old run under a new file.
 input_fingerprint = (
     getattr(upload, "file_id", None) or upload.name,
-    getattr(upload, "size", None),
+    len(document),
     delimiter,
     text_column,
     id_column,
 )
 if st.session_state.get("input_fingerprint") != input_fingerprint:
     st.session_state["input_fingerprint"] = input_fingerprint
-    st.session_state.pop("proposal", None)
-    st.session_state.pop("run", None)
+    forget("proposal", "run")
 
 if not comments:
     st.error("No usable comments in that column.")
@@ -155,7 +135,10 @@ if not comments:
 
 message = f"**{len(comments):,}** comments ready."
 if skipped.total:
-    message += f" {skipped.total:,} rows skipped before any model call ({skipped.empty} empty, {skipped.placeholder} placeholder)."
+    message += (
+        f" {skipped.total:,} rows skipped before any model call "
+        f"({skipped.empty} empty, {skipped.placeholder} placeholder)."
+    )
 st.success(message)
 
 with st.expander("Preview"):
@@ -163,7 +146,7 @@ with st.expander("Preview"):
         pd.DataFrame(
             [{"id": c.comment_id, "row": c.row_number, "text": c.text} for c in comments[:25]]
         ),
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )
 
@@ -171,8 +154,10 @@ st.subheader("2. Propose a codebook")
 
 max_themes = st.slider("Maximum themes to propose", 3, 40, DEFAULT_MAX_THEMES)
 
-client = get_client(model_override)
-if client is None:
+try:
+    client = Client(model=model_override or None)
+except ConfigError as error:
+    st.error(str(error))
     st.stop()
 
 counter = TokenCounter(client.model)
@@ -184,12 +169,11 @@ st.code(estimate.render(), language="text")
 if st.button("Propose codebook", type="primary"):
     with st.spinner("Reading the whole corpus..."):
         try:
-            result = propose_step.propose(comments, client, max_themes)
+            st.session_state["proposal"] = propose_step.propose(comments, client, max_themes)
         except ModelError as error:
             st.error(str(error))
             st.stop()
-    st.session_state["proposal"] = result
-    st.session_state.pop("run", None)
+    forget("run")
 
 result = st.session_state.get("proposal")
 if result is None:
@@ -198,51 +182,42 @@ if result is None:
 st.info(
     f"{len(result.codebook.themes)} themes proposed. "
     f"{sum(len(t.examples) for t in result.codebook.themes)} example quotes verified "
-    f"against the source comments, {len(result.rejected_examples)} rejected and dropped."
+    f"against the comments they came from, {len(result.rejected_examples)} rejected "
+    "and dropped."
 )
 
 st.subheader("3. Edit the codebook")
 st.caption(
     "Rename, rewrite, merge and delete. Only the themes left here are used for "
-    "labelling. Nothing is labelled until you press the button below. An id is "
-    "lowercase letters, digits and underscores, and no two themes may share one."
+    "labelling, and nothing is labelled until you press the button below. An id "
+    "is lowercase letters, digits and underscores, and no two themes may share one."
 )
 
-editable = pd.DataFrame(
-    [
-        {"id": theme.id, "label": theme.label, "description": theme.description}
-        for theme in result.codebook.themes
-    ]
-)
 edited = st.data_editor(
-    editable, num_rows="dynamic", use_container_width=True, hide_index=True, key="codebook_editor"
+    pd.DataFrame(
+        [
+            {"id": theme.id, "label": theme.label, "description": theme.description}
+            for theme in result.codebook.themes
+        ]
+    ),
+    num_rows="dynamic",
+    width="stretch",
+    hide_index=True,
+    key="codebook_editor",
 )
 
 for theme in result.codebook.themes:
     if theme.examples:
-        with st.expander(f"Examples for “{theme.label}”"):
+        with st.expander(f"Examples for {theme.label}"):
             for example in theme.examples:
-                st.markdown(f"> {example.quote}  \n<sub>comment {example.comment_id}</sub>", unsafe_allow_html=True)
+                st.markdown(f"> {example.quote}")
+                st.caption(f"from comment {example.comment_id}")
 
-edited_rows = [
-    {
-        "id": str(row.get("id") or "").strip(),
-        "label": str(row.get("label") or "").strip(),
-        "description": str(row.get("description") or "").strip(),
-    }
-    for _, row in edited.iterrows()
-    if str(row.get("id") or "").strip() or str(row.get("label") or "").strip()
-]
-
-if not edited_rows:
-    st.warning("Keep at least one theme to continue.")
-    st.stop()
-
-# Exactly the checks `ofc label` runs when it loads codebook.yaml, so the file
-# this page offers for download is one the command line will accept, and the
-# app cannot label against a codebook the CLI would refuse.
+# Exactly the checks `ofc label` runs when it loads codebook.yaml, so this page
+# cannot label against a codebook the command line would refuse, and the file
+# it offers for download is one the command line will accept.
 try:
-    approved = from_dict({"themes": edited_rows}, origin="the table above")
+    approved = codebook_from_records(edited.to_dict("records"))
 except CodebookError as error:
     st.error(str(error))
     st.stop()
@@ -253,7 +228,7 @@ codebook_fingerprint = tuple(
 )
 if st.session_state.get("codebook_fingerprint") != codebook_fingerprint:
     st.session_state["codebook_fingerprint"] = codebook_fingerprint
-    st.session_state.pop("run", None)
+    forget("run")
 
 st.download_button(
     "Download codebook.yaml", to_yaml(approved), file_name="codebook.yaml", mime="text/yaml"
@@ -273,11 +248,10 @@ if st.button("Label comments", type="primary"):
     def on_progress(done: int, total: int) -> None:
         progress.progress(done / total, text=f"Labelling {done:,}/{total:,}")
 
-    run = label_step.label_comments(
+    st.session_state["run"] = label_step.label_comments(
         comments, approved, client, concurrency=concurrency, on_progress=on_progress
     )
     progress.empty()
-    st.session_state["run"] = run
 
 run = st.session_state.get("run")
 if run is None:
@@ -285,17 +259,17 @@ if run is None:
 
 st.subheader("5. Results")
 
-a, b, c = st.columns(3)
-a.metric("Comments labelled", f"{run.comments_labelled:,}")
-b.metric("Unassigned", f"{run.comments_unassigned:,}")
-c.metric("Excluded after checking", f"{run.comments_failed:,}")
+first, second, third = st.columns(3)
+first.metric("Comments labelled", f"{run.comments_labelled:,}")
+second.metric("Unassigned", f"{run.comments_unassigned:,}")
+third.metric("Excluded after checking", f"{run.comments_failed:,}")
 
 st.caption(
     "These three counts were tallied in code as the run went, not estimated by "
     "the model. Every quote below is a verbatim span of the comment beside it."
 )
 
-st.dataframe(pd.DataFrame(run.rows), use_container_width=True, hide_index=True)
+st.dataframe(pd.DataFrame(run.rows), width="stretch", hide_index=True)
 st.download_button(
     "Download labelled.csv",
     rows_to_csv(OUTPUT_COLUMNS, run.rows),
@@ -305,7 +279,7 @@ st.download_button(
 
 if run.failures:
     st.warning(f"{len(run.failures):,} comments were excluded because a check failed.")
-    st.dataframe(pd.DataFrame(run.failures), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(run.failures), width="stretch", hide_index=True)
     st.download_button(
         "Download labelling_failures.csv",
         rows_to_csv(FAILURE_COLUMNS, run.failures),

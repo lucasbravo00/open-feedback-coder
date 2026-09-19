@@ -921,6 +921,7 @@ ui = [
 [package.dev-dependencies]
 dev = [
     { name = "pytest" },
+    { name = "streamlit" },
 ]
 
 [package.metadata]
@@ -933,7 +934,10 @@ requires-dist = [
 provides-extras = ["ui"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.0" }]
+dev = [
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "streamlit", specifier = ">=1.36" },
+]
 
 [[package]]
 name = "openai"
