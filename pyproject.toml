@@ -15,6 +15,8 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["streamlit>=1.36"]
+
+[dependency-groups]
 dev = ["pytest>=8.0"]
 
 [project.scripts]
