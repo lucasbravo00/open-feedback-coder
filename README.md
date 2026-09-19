@@ -1,3 +1,264 @@
 # open-feedback-coder
 
-Placeholder; written at the end of the build.
+Thematic coding of open-ended feedback — climate survey comments, exit
+interview notes, free-text form answers — where every label can be traced back
+to the words that produced it.
+
+Two commands. The first reads the whole corpus and proposes a codebook. You
+edit that codebook by hand: rename themes, merge the ones that say the same
+thing, delete the ones you do not want. The second labels every comment
+against the themes you approved, and attaches to each label the quote from the
+comment that supports it.
+
+The difference from pasting comments into a chat window is that the categories
+are yours and the evidence is checked. No label reaches the output without a
+quote, and no quote reaches the output without having been found, character
+for character, inside the comment it came from.
+
+## What this version does
+
+1. Reads a CSV of open-ended answers.
+2. Proposes an editable codebook from the full corpus.
+3. Labels each comment with one primary theme, up to two secondary themes, a
+   valence per theme, and a verified quote per theme.
+4. Writes one CSV of labels and one CSV of the comments it excluded.
+
+That is the whole scope. There is no segmentation by team, no anonymity
+threshold, no executive summary, no local model.
+
+## What it guarantees, and what it does not
+
+These are properties of the code, checked by the test suite:
+
+- **You approve the codebook.** Labelling reads the YAML file on disk. Themes
+  you deleted cannot be assigned; themes you renamed are what appear in the
+  output.
+- **Every label carries a quote.** A labelled row always has a non-empty
+  quote, plus the character offsets where it was found.
+- **Every quote is verbatim.** For every labelled row in the output,
+  `comment_text[quote_start:quote_end] == quote`. You can check this yourself
+  with the output file alone and no access to the model.
+- **Unverifiable labels do not ship.** If any quote for a comment cannot be
+  located in that comment, the whole comment is excluded from the output and
+  written to the failures file with the reason and the text the model
+  returned.
+- **Counts are arithmetic.** Nothing in this tool asks a model how many of
+  anything there are. Frequencies are counted over the output rows.
+
+What it does **not** tell you:
+
+- **It is not validated against human coding.** No inter-coder agreement was
+  measured, no accuracy was measured, and none is claimed. A verified quote
+  means the words are really in the comment. It does not mean the theme is the
+  right theme, or that the valence is right.
+- Because of that: if you are going to make a decision with these results,
+  read a sample of the labelled rows against their comments first. The output
+  is built to make that cheap — the quote and its source text sit in the same
+  row.
+
+## Quickstart
+
+Requires [uv](https://docs.astral.sh/uv/) and an OpenAI API key.
+
+```bash
+git clone https://github.com/YOUR-USERNAME/open-feedback-coder.git
+cd open-feedback-coder
+uv sync
+```
+
+```bash
+export OPENAI_API_KEY="sk-..."
+export OPENAI_MODEL="<the model id you want to use>"
+```
+
+There is no default model on purpose. A hard-coded model id goes stale, and
+which model produced a codebook belongs in the record of the run — it is
+written into the codebook file.
+
+Propose a codebook from your own file. The column flags are explicit because
+your columns will not be named like anyone else's:
+
+```bash
+uv run ofc propose --input responses.csv --text-column "What would you change?"
+```
+
+Before spending anything the command prints how many tokens it is about to
+send and waits for you to confirm. Pass `--price-in` and `--price-out` (USD per
+million tokens, from your provider's pricing page) to also see a cost estimate;
+without them it reports tokens only rather than inventing a number.
+
+Open `codebook.yaml`, edit it, then label:
+
+```bash
+uv run ofc label --input responses.csv \
+                 --text-column "What would you change?" \
+                 --codebook codebook.yaml
+```
+
+You get `labelled.csv` and `labelling_failures.csv`.
+
+### Graphical version
+
+```bash
+uv run --extra ui streamlit run app.py
+```
+
+Same steps, same checks, with the codebook in an editable table.
+
+## Reading your own CSV
+
+| Flag | |
+|---|---|
+| `--text-column` | Required. The column holding the open-ended answers. |
+| `--id-column` | Optional. Defaults to the row number, counted from the first data row. |
+| `--delimiter` | Defaults to `,`. Use `--delimiter $'\t'` for TSV. |
+| `--encoding` | Defaults to `utf-8-sig`, which tolerates a byte-order mark. |
+
+If the column you name is not there, the error lists the columns that are.
+
+Two kinds of row are dropped before any model call, and both are reported:
+empty cells, and cells whose whole content is one of `n/a`, `n.a.`, `na`,
+`none`, `nil`, `null`, `-`, `--`, `.`, `?`, `blank`, `<blank>`. Row numbers
+still refer to the original file, so a dropped row leaves a gap rather than
+shifting everything after it.
+
+## Output
+
+`labelled.csv` is in long format: one row per comment-theme pair. A comment
+with three themes occupies three rows; an unassigned comment occupies one.
+
+| Column | |
+|---|---|
+| `comment_id` | From `--id-column`, or the row number. |
+| `row_number` | Position in the input file, counting data rows from 1. |
+| `comment_text` | The comment, NFC-normalised. |
+| `assignment` | `primary`, `secondary`, or `unassigned`. |
+| `theme_id`, `theme_label` | From your approved codebook. Empty when unassigned. |
+| `valence` | `positive`, `negative` or `neutral`, for this theme in this comment. Empty when unassigned. |
+| `quote` | The span of `comment_text` supporting this label. Empty when unassigned. |
+| `quote_start`, `quote_end` | Character offsets into `comment_text`. |
+
+A comment that fits no theme in your codebook gets a single row with
+`assignment = unassigned` and no quote — it is the one row type without one.
+The model is told not to stretch a theme to fit, so the count of unassigned
+comments is information about your codebook, not noise to be cleared.
+
+`labelling_failures.csv` holds the comments that were excluded, with
+`failure_reason` one of: `quote_not_found_in_comment`, `unknown_theme_id`,
+`duplicate_theme`, `invalid_valence`, `no_primary_theme`,
+`multiple_primary_themes`, `too_many_secondary_themes`, `model_error`.
+
+## How a quote is checked
+
+Two transformations, kept apart deliberately.
+
+**On read.** Every comment is normalised to Unicode NFC, once. That is the
+canonical text: it is what the model sees, what is written to `comment_text`,
+and what the offsets refer to.
+
+**On matching.** A quote is compared against the comment in a folded form that
+ignores differences models get wrong while copying, and nothing else:
+
+- runs of whitespace (including tabs, newlines and non-breaking spaces)
+  collapse to a single space, and leading and trailing whitespace is dropped;
+- curly quotes, primes and backticks fold to `'` and `"`;
+- en dashes, em dashes, figure dashes and minus signs fold to `-`.
+
+Case, wording and word order are not touched, so a paraphrase does not match.
+
+The folded forms decide whether the quote is there; the offsets that come back
+point into the canonical text. This means the string written to the `quote`
+column is lifted out of the comment itself, keeping its original punctuation,
+rather than being whatever the model typed. That is what makes
+`comment_text[quote_start:quote_end] == quote` hold exactly.
+
+Checking is all or nothing per comment. If one of a comment's three quotes
+cannot be located, the whole comment is excluded rather than published with
+its two surviving labels: in a spreadsheet, a partly verified row looks
+exactly like a fully verified one.
+
+## Where the model is used, and where it is not
+
+Used to read text and propose language: which themes emerge from the corpus,
+which theme a comment belongs to, which span of the comment supports that, and
+whether the tone is positive, negative or neutral.
+
+Not used for anything else. Counts, frequencies and totals are computed in
+code over the output rows. Quote verification is string matching. Dropping
+empty and placeholder answers is a fixed list. The token count shown before a
+run is measured by encoding the text that will be sent; the cost figure is
+arithmetic over prices you supply.
+
+## Definitions the tool commits to
+
+Primary theme, quoted from the labelling prompt:
+
+> The primary theme is what the comment is mainly about: the concern or
+> experience that prompted the person to write it. Secondary themes are
+> mentioned but are not what the comment is driving at.
+
+This is a judgement the model makes. Unlike quote verification, it cannot be
+checked in code — it is stated here so that what was asked for is on the
+record.
+
+Valence is per comment-theme pair, not per comment: one comment can be
+positive about pay and negative about onboarding, and both are recorded.
+
+At most three themes per comment (one primary, up to two secondary), and at
+most `--max-themes` themes in a proposed codebook (default 15). Both are caps,
+and when the model exceeds them the excess is discarded and reported rather
+than dropped quietly.
+
+## Size of a run
+
+The codebook is proposed from the entire corpus in a single call. There is no
+sampling, because choosing which comments stand for the rest is a
+methodological decision this tool will not make for you.
+
+Every run prints its measured input token count before sending anything.
+`--max-input-tokens N` stops the run if that count goes over `N`. If a corpus
+is too large for the model you chose, the run stops and reports the number;
+what to do about it is yours to decide.
+
+## Trying it on real open text
+
+The repository ships no data. `scripts/download_dataset.py` fetches the 2025
+UC OSPO Network open source survey and converts its open-ended answers into a
+CSV this tool can read.
+
+```bash
+uv run python scripts/download_dataset.py
+```
+
+The data is on Dryad at <https://doi.org/10.5061/dryad.2280gb662>, licensed
+CC0, de-identified by its authors, with the free-text answers in a Word file
+inside the archive. Dryad serves downloads behind an automated browser check,
+so the script may not be able to fetch the archive for you; when it cannot it
+prints the one link to click and how to re-run it with `--archive`. The Zenodo
+deposit associated with this survey holds the authors' R analysis code
+(BSD-3), not the survey data.
+
+**This is not workplace feedback.** It is a survey of academic open source
+contributors. It is here for one reason: to run the pipeline over real
+open-ended text that somebody else wrote, with all the typos, fragments and
+odd punctuation that implies, instead of over text invented to make the tool
+look good.
+
+Cite the data as: Scarlett, Curty, Gomez et al. (2026), *Survey responses from
+the 2025 UC OSPO Network open source survey* [Data set], Dryad.
+
+## Development
+
+```bash
+uv run pytest
+```
+
+The suite runs offline; no API key and no network access are needed. The
+central test checks the quote guarantee over randomised slices of comments
+containing curly quotes, em dashes, non-breaking spaces, CRLF line endings and
+decomposed accents, and then checks it again on the CSV that an end-to-end run
+actually writes to disk.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
