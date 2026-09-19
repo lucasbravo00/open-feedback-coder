@@ -267,14 +267,24 @@ the 2025 UC OSPO Network open source survey* [Data set], Dryad.
 ## Development
 
 ```bash
+uv sync
 uv run pytest
 ```
 
-The suite runs offline; no API key and no network access are needed. The
-central test checks the quote guarantee over randomised slices of comments
-containing curly quotes, em dashes, non-breaking spaces, CRLF line endings and
-decomposed accents, and then checks it again on the CSV that an end-to-end run
-actually writes to disk.
+The suite runs offline: no API key, no network access, no model calls. The
+model is replaced by a stand-in that returns fixed responses, which is what
+makes the failure paths reachable at all.
+
+The central test checks the quote guarantee over randomised slices of comments
+containing curly quotes, em dashes, non-breaking spaces, zero-width
+characters, CRLF line endings and decomposed accents. It is then checked again
+on the rows the labeller builds, and again on the CSV an end-to-end run writes
+to disk, because that file is what anyone auditing the output will actually
+read.
+
+The web interface is driven by `streamlit.testing.v1.AppTest` rather than left
+to a screenshot. The one bug that made it useless — every upload failed — was
+invisible on the page before the upload.
 
 ## Licence
 
