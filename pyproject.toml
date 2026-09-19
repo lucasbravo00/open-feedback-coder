@@ -1,0 +1,31 @@
+[project]
+name = "open-feedback-coder"
+version = "0.1.0"
+description = "Thematic coding of open-ended feedback with a human-approved codebook and verified verbatim quotes."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Lucas" }]
+keywords = ["qualitative-coding", "survey", "thematic-analysis", "people-analytics"]
+dependencies = [
+    "openai>=1.40",
+    "pyyaml>=6.0",
+    "tiktoken>=0.7",
+]
+
+[project.optional-dependencies]
+ui = ["streamlit>=1.36"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+ofc = "open_feedback_coder.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/open_feedback_coder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
