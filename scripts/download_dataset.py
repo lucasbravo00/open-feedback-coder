@@ -29,6 +29,7 @@ import io
 import json
 import os
 import re
+import statistics
 import sys
 import tarfile
 import urllib.error
@@ -44,12 +45,13 @@ QUAL_DOCUMENT_SUFFIX = ".docx"
 
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
 
-# Responses in the Word file are numbered for readability; the numbers are
-# arbitrary and are stripped rather than kept as ids.
+# Responses in the Word file are numbered for readability. The authors say
+# those numbers are arbitrary and match nothing in the other files, so they
+# are stripped rather than kept as ids.
 LEADING_NUMBER = re.compile(r"^\s*\d+[.)]\s+")
-# The authors' own column names for the free-text questions are single
-# snake_case tokens, which is how section headings are told apart from answers.
-SECTION_HEADING = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
+# Each block of answers is introduced by the question that produced it, in the
+# form "Q12: Are there any other challenges you've encountered...".
+SECTION_HEADING = re.compile(r"^(Q\d+):\s*(.+)$")
 
 MANUAL_INSTRUCTIONS = f"""\
 Dryad served an automated browser check instead of the file, so this script
@@ -152,26 +154,47 @@ def paragraphs_of(document: bytes) -> list[str]:
 def to_rows(paragraphs: list[str]) -> list[dict]:
     """Split paragraphs into question sections and responses.
 
-    Deliberately literal: a paragraph is either a section heading, recognised
-    by the authors' own snake_case naming, or one response. Nothing is merged,
-    reworded or dropped beyond the display numbering.
+    Deliberately literal: a paragraph is either a question heading or one
+    response. Nothing is merged, reworded, filtered or dropped beyond the
+    display numbering, so the CSV holds every answer the deposit holds.
     """
     rows: list[dict] = []
-    section = ""
+    question_id = ""
+    question_text = ""
 
     for paragraph in paragraphs:
-        if SECTION_HEADING.match(paragraph) and len(paragraph) < 60:
-            section = paragraph
+        heading = SECTION_HEADING.match(paragraph)
+        if heading:
+            question_id, question_text = heading.group(1), heading.group(2).strip()
             continue
         rows.append(
             {
                 "response_id": str(len(rows) + 1),
-                "question": section,
+                "question_id": question_id,
+                "question_text": question_text,
                 "response": LEADING_NUMBER.sub("", paragraph),
             }
         )
 
     return rows
+
+
+def summarise(rows: list[dict]) -> str:
+    """Describe what came out, so nobody has to guess at the shape of it."""
+    order: list[str] = []
+    counts: dict[str, list[int]] = {}
+    for row in rows:
+        key = row["question_id"] or "(no question)"
+        if key not in counts:
+            counts[key] = []
+            order.append(key)
+        counts[key].append(len(row["response"]))
+
+    lines = [f"{'question':<12}{'answers':>9}{'median length':>15}"]
+    for key in order:
+        median = round(statistics.median(counts[key]))
+        lines.append(f"{key:<12}{len(counts[key]):>9}{median:>15}")
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -217,19 +240,31 @@ def main() -> int:
         )
 
     out_path = os.path.join(args.out_dir, "ospo_open_responses.csv")
+    columns = ["response_id", "question_id", "question_text", "response"]
     with open(out_path, "w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["response_id", "question", "response"])
+        writer = csv.DictWriter(handle, fieldnames=columns)
         writer.writeheader()
         writer.writerows(rows)
 
-    sections = sorted({row["question"] for row in rows if row["question"]})
-    print(f"Wrote {out_path}: {len(rows)} responses across {len(sections)} questions.", file=sys.stderr)
-    if sections:
-        print(f"Questions: {', '.join(sections)}", file=sys.stderr)
-    else:
+    questions = {row["question_id"] for row in rows if row["question_id"]}
+    print(
+        f"Wrote {out_path}: {len(rows)} responses across {len(questions)} questions.",
+        file=sys.stderr,
+    )
+    if not questions:
         print(
             "Warning: no question headings were recognised, so every paragraph "
             "was treated as a response. Check the file with --dump-paragraphs.",
+            file=sys.stderr,
+        )
+    else:
+        print(file=sys.stderr)
+        print(summarise(rows), file=sys.stderr)
+        print(
+            "\nMost of these questions are write-in options answered in a word or "
+            "two. Q12 is the one asked as an open question, and its answers read "
+            "like survey comments. Decide which of them you want before you run "
+            "anything over the file.",
             file=sys.stderr,
         )
     print(

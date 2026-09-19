@@ -64,7 +64,7 @@ What it does **not** tell you:
 Requires [uv](https://docs.astral.sh/uv/) and an OpenAI API key.
 
 ```bash
-git clone https://github.com/YOUR-USERNAME/open-feedback-coder.git
+git clone https://github.com/lucasbravo00/open-feedback-coder.git
 cd open-feedback-coder
 uv sync
 ```
@@ -239,8 +239,8 @@ what to do about it is yours to decide.
 
 ## Trying it on real open text
 
-The repository ships no data. `scripts/download_dataset.py` fetches the 2025
-UC OSPO Network open source survey and converts its open-ended answers into a
+The repository ships no survey data. `scripts/download_dataset.py` converts
+the open-ended answers of the 2025 UC OSPO Network open source survey into a
 CSV this tool can read.
 
 ```bash
@@ -248,18 +248,38 @@ uv run python scripts/download_dataset.py
 ```
 
 The data is on Dryad at <https://doi.org/10.5061/dryad.2280gb662>, licensed
-CC0, de-identified by its authors, with the free-text answers in a Word file
-inside the archive. Dryad serves downloads behind an automated browser check,
-so the script may not be able to fetch the archive for you; when it cannot it
-prints the one link to click and how to re-run it with `--archive`. The Zenodo
-deposit associated with this survey holds the authors' R analysis code
-(BSD-3), not the survey data.
+CC0 and de-identified by its authors, with the free-text answers in a Word
+file inside the archive. Dryad serves downloads behind an automated browser
+check, so the script often cannot fetch the archive for you; when it cannot,
+it prints the link to click and how to re-run it with `--archive`. The Zenodo
+deposit associated with this survey holds the authors' R analysis code under
+BSD-3, and its `data/` directory is deliberately empty, so it is not a source
+for the answers.
+
+### What is actually in it
+
+318 answers across eight free-text questions. They are not all the same kind
+of thing, and the script prints this breakdown so you can see that before you
+spend anything:
+
+| Question | Answers | Median length |
+|---|---|---|
+| Q4, Q6, Q7, Q15, Q19 — "Other" write-ins | 77 | 21–50 characters |
+| Q8 — where code is shared | 26 | 15 characters |
+| Q18 — primary field of study | 174 | 15 characters |
+| **Q12 — other challenges, or support you would find helpful** | **41** | **175 characters** |
+
+Only Q12 was asked as an open question, and only its answers read like the
+survey comments this tool is built for. The other 277 are mostly one or two
+words, and a codebook induced over all 318 is dominated by names of academic
+disciplines. Filter to `question_id == Q12` before drawing any conclusion, and
+note that 41 comments is a small corpus.
 
 **This is not workplace feedback.** It is a survey of academic open source
 contributors. It is here for one reason: to run the pipeline over real
-open-ended text that somebody else wrote, with all the typos, fragments and
-odd punctuation that implies, instead of over text invented to make the tool
-look good.
+open-ended text that somebody else wrote, with the typos, fragments and odd
+punctuation that implies, instead of over text invented to make the tool look
+good.
 
 Cite the data as: Scarlett, Curty, Gomez et al. (2026), *Survey responses from
 the 2025 UC OSPO Network open source survey* [Data set], Dryad.
@@ -281,6 +301,16 @@ characters, CRLF line endings and decomposed accents. It is then checked again
 on the rows the labeller builds, and again on the CSV an end-to-end run writes
 to disk, because that file is what anyone auditing the output will actually
 read.
+
+Ten of the real Q12 answers are committed under `tests/fixtures/`, with their
+provenance in `tests/fixtures/SOURCE.md`. They carry what invented test
+strings do not: non-breaking spaces mid-sentence, a curly apostrophe,
+bracketed redactions made by the survey's own authors, respondents numbering
+their own points, and lengths up to 1042 characters. The suite quotes hundreds
+of spans of them back at the verifier, retyped the way a model flattens
+typography, and checks that what gets stored is the source text rather than
+the retyping. When the full corpus has been downloaded, the same checks run
+over all 318 answers.
 
 The web interface is driven by `streamlit.testing.v1.AppTest` rather than left
 to a screenshot. The one bug that made it useless — every upload failed — was
