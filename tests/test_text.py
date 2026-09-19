@@ -21,7 +21,7 @@ TRICKY_COMMENTS = [
     "Manager's great – team's a mess... 50/50, I'd say.",
     "line one\r\nline two\r\nline three",
     "   leading and trailing whitespace   ",
-    "Tabs\tand\tnon-breaking spaces everywhere.",
+    "Tabs\tand\tnon-breaking\u00a0spaces everywhere.",
     "café conversations are the only real feedback channel",
     "A" * 300 + " and then something specific about workload",
 ]
@@ -83,7 +83,7 @@ def test_whitespace_differences_are_tolerated():
 
 
 def test_non_breaking_space_matches_a_normal_space():
-    comment = canonicalise("Tabs\tand\tnon-breaking spaces everywhere.")
+    comment = canonicalise("Tabs\tand\tnon-breaking\u00a0spaces everywhere.")
 
     assert quote_is_verbatim("non-breaking spaces everywhere.", comment)
 

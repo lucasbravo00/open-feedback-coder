@@ -21,10 +21,10 @@ from open_feedback_coder.text import canonicalise, locate_quote
 EM_DASH = "—"
 CURLY_OPEN = "“"
 CURLY_CLOSE = "”"
-ZERO_WIDTH_SPACE = "​"
-SOFT_HYPHEN = "­"
-NEXT_LINE = ""
-NON_BREAKING_SPACE = " "
+ZERO_WIDTH_SPACE = "\u200b"
+SOFT_HYPHEN = "\u00ad"
+NEXT_LINE = "\u0085"
+NON_BREAKING_SPACE = "\u00a0"
 
 # Typography the model is likely to flatten, plus a doubled space it will not
 # reproduce. Both are inside the span the tests quote.

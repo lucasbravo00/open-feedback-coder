@@ -140,7 +140,7 @@ def test_tab_separated_input(tmp_path):
 
 def test_byte_order_mark_does_not_corrupt_the_first_column_name(tmp_path):
     path = tmp_path / "bom.csv"
-    path.write_text("﻿text\nan answer\n", encoding="utf-8")
+    path.write_text("\ufefftext\nan answer\n", encoding="utf-8")
 
     comments, _ = read_comments(str(path), text_column="text")
 
