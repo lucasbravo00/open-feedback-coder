@@ -19,7 +19,7 @@ import streamlit as st
 
 from open_feedback_coder import label as label_step, propose as propose_step
 from open_feedback_coder.budget import TokenCounter
-from open_feedback_coder.codebook import Codebook, Theme, to_yaml
+from open_feedback_coder.codebook import CodebookError, from_dict, to_yaml
 from open_feedback_coder.csv_io import (
     FAILURE_COLUMNS,
     OUTPUT_COLUMNS,
@@ -133,6 +133,22 @@ id_column = None if id_column == "(row number)" else id_column
 
 comments, skipped = read_uploaded(upload, text_column, id_column, delimiter)
 
+# A proposal and a set of results only mean anything for the corpus they were
+# computed from. Streamlit reruns the whole script on every interaction and
+# keeps session state across those reruns, so without this the page would go
+# on showing an old run under a new file.
+input_fingerprint = (
+    getattr(upload, "file_id", None) or upload.name,
+    getattr(upload, "size", None),
+    delimiter,
+    text_column,
+    id_column,
+)
+if st.session_state.get("input_fingerprint") != input_fingerprint:
+    st.session_state["input_fingerprint"] = input_fingerprint
+    st.session_state.pop("proposal", None)
+    st.session_state.pop("run", None)
+
 if not comments:
     st.error("No usable comments in that column.")
     st.stop()
@@ -188,7 +204,8 @@ st.info(
 st.subheader("3. Edit the codebook")
 st.caption(
     "Rename, rewrite, merge and delete. Only the themes left here are used for "
-    "labelling. Nothing is labelled until you press the button below."
+    "labelling. Nothing is labelled until you press the button below. An id is "
+    "lowercase letters, digits and underscores, and no two themes may share one."
 )
 
 editable = pd.DataFrame(
@@ -207,21 +224,37 @@ for theme in result.codebook.themes:
             for example in theme.examples:
                 st.markdown(f"> {example.quote}  \n<sub>comment {example.comment_id}</sub>", unsafe_allow_html=True)
 
-approved_themes = [
-    Theme(
-        id=str(row["id"]).strip(),
-        label=str(row["label"]).strip(),
-        description=str(row.get("description") or "").strip(),
-    )
+edited_rows = [
+    {
+        "id": str(row.get("id") or "").strip(),
+        "label": str(row.get("label") or "").strip(),
+        "description": str(row.get("description") or "").strip(),
+    }
     for _, row in edited.iterrows()
-    if str(row.get("id") or "").strip() and str(row.get("label") or "").strip()
+    if str(row.get("id") or "").strip() or str(row.get("label") or "").strip()
 ]
 
-if not approved_themes:
+if not edited_rows:
     st.warning("Keep at least one theme to continue.")
     st.stop()
 
-approved = Codebook(themes=approved_themes)
+# Exactly the checks `ofc label` runs when it loads codebook.yaml, so the file
+# this page offers for download is one the command line will accept, and the
+# app cannot label against a codebook the CLI would refuse.
+try:
+    approved = from_dict({"themes": edited_rows}, origin="the table above")
+except CodebookError as error:
+    st.error(str(error))
+    st.stop()
+
+# Results computed against a different set of themes are no longer results.
+codebook_fingerprint = tuple(
+    (theme.id, theme.label, theme.description) for theme in approved.themes
+)
+if st.session_state.get("codebook_fingerprint") != codebook_fingerprint:
+    st.session_state["codebook_fingerprint"] = codebook_fingerprint
+    st.session_state.pop("run", None)
+
 st.download_button(
     "Download codebook.yaml", to_yaml(approved), file_name="codebook.yaml", mime="text/yaml"
 )
@@ -258,8 +291,8 @@ b.metric("Unassigned", f"{run.comments_unassigned:,}")
 c.metric("Excluded after checking", f"{run.comments_failed:,}")
 
 st.caption(
-    "Counts are arithmetic over the rows below, not an estimate from the model. "
-    "Every quote shown is a verbatim span of the comment beside it."
+    "These three counts were tallied in code as the run went, not estimated by "
+    "the model. Every quote below is a verbatim span of the comment beside it."
 )
 
 st.dataframe(pd.DataFrame(run.rows), use_container_width=True, hide_index=True)

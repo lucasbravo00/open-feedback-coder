@@ -18,6 +18,22 @@ def _log(message: str = "") -> None:
     print(message, file=sys.stderr)
 
 
+def _positive_int(value: str) -> int:
+    """An argparse type for counts that are meaningless at zero or below.
+
+    Without this a negative --max-themes reaches a paid call and comes back
+    reporting more discarded themes than the model returned, which is a
+    fabricated number on the user's screen.
+    """
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be 1 or more, got {number}")
+    return number
+
+
 def _add_input_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", required=True, metavar="FILE", help="Input CSV file.")
     parser.add_argument(
@@ -59,7 +75,7 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--max-input-tokens",
-        type=int,
+        type=_positive_int,
         metavar="N",
         help="Stop before sending anything if the measured input exceeds N tokens.",
     )
@@ -221,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_model_arguments(propose_parser)
     propose_parser.add_argument(
         "--max-themes",
-        type=int,
+        type=_positive_int,
         default=DEFAULT_MAX_THEMES,
         metavar="N",
         help=f"Maximum number of themes to propose (default {DEFAULT_MAX_THEMES}).",
@@ -250,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     label_parser.add_argument(
         "--concurrency",
-        type=int,
+        type=_positive_int,
         default=4,
         metavar="N",
         help="How many comments to label at once (default 4).",

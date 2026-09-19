@@ -34,31 +34,45 @@ from dataclasses import dataclass
 # Every entry maps one character to exactly one character, so folding never
 # changes the number of characters except where whitespace runs collapse.
 _CHARACTER_FOLDS = {
-    "‘": "'",  # left single quotation mark
-    "’": "'",  # right single quotation mark
-    "‚": "'",  # single low-9 quotation mark
-    "‛": "'",  # single high-reversed-9 quotation mark
-    "′": "'",  # prime
-    "´": "'",  # acute accent used as an apostrophe
-    "`": "'",  # grave accent used as an apostrophe
-    "“": '"',  # left double quotation mark
-    "”": '"',  # right double quotation mark
-    "„": '"',  # double low-9 quotation mark
-    "‟": '"',  # double high-reversed-9 quotation mark
-    "″": '"',  # double prime
-    "‐": "-",  # hyphen
-    "‑": "-",  # non-breaking hyphen
-    "‒": "-",  # figure dash
-    "–": "-",  # en dash
-    "—": "-",  # em dash
-    "―": "-",  # horizontal bar
-    "−": "-",  # minus sign
+    "\u2018": "'",  # left single quotation mark
+    "\u2019": "'",  # right single quotation mark
+    "\u201a": "'",  # single low-9 quotation mark
+    "\u201b": "'",  # single high-reversed-9 quotation mark
+    "\u2032": "'",  # prime
+    "\u00b4": "'",  # acute accent used as an apostrophe
+    "\u0060": "'",  # grave accent used as an apostrophe
+    "\u201c": '"',  # left double quotation mark
+    "\u201d": '"',  # right double quotation mark
+    "\u201e": '"',  # double low-9 quotation mark
+    "\u201f": '"',  # double high-reversed-9 quotation mark
+    "\u2033": '"',  # double prime
+    "\u2010": "-",  # hyphen
+    "\u2011": "-",  # non-breaking hyphen
+    "\u2012": "-",  # figure dash
+    "\u2013": "-",  # en dash
+    "\u2014": "-",  # em dash
+    "\u2015": "-",  # horizontal bar
+    "\u2212": "-",  # minus sign
 }
 
-# Characters treated as whitespace and collapsed into a single space.
+# Characters treated as whitespace and collapsed into a single space. This
+# is every code point with the Unicode White_Space property plus the C0
+# separator controls, so the middle of a field folds the same way
+# `str.strip()` already folds its edges.
 _WHITESPACE = frozenset(
-    " \t\n\r\f\v         "
-    "        　​﻿"
+    " \t\n\r\f\v\u001c\u001d\u001e\u001f\u0085\u00a0"
+    "\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+)
+
+# Invisible formatting characters, dropped rather than folded to a space.
+# They survive copy-and-paste out of web forms and word processors, and
+# neither the reader nor the model can see them. Folding one to a space
+# would invent a word boundary in the middle of a word, so a quote of what
+# is plainly written there would be rejected; dropping them means the
+# visible text is what gets compared.
+_IGNORED = frozenset(
+    "\u00ad\u200b\u200c\u200d\u2060\ufeff"
 )
 
 
@@ -76,14 +90,18 @@ def fold(text: str) -> tuple[str, list[int]]:
 
     The returned map has one entry per character of the folded string, holding
     the index in `text` of the character that produced it. Leading and trailing
-    whitespace is dropped and internal whitespace runs collapse to one space,
-    so the folded string can be shorter than the input but never longer.
+    whitespace is dropped, internal whitespace runs collapse to one space, and
+    invisible formatting characters disappear, so the folded string can be
+    shorter than the input but never longer.
     """
     folded: list[str] = []
     index_map: list[int] = []
     pending_space_at: int | None = None
 
     for position, character in enumerate(text):
+        if character in _IGNORED:
+            continue
+
         if character in _WHITESPACE:
             # Remember that a gap occurred, but only emit a space once we know
             # a non-space character follows. This drops trailing whitespace
@@ -120,11 +138,17 @@ class QuoteMatch:
 def locate_quote(quote: str, comment: str) -> QuoteMatch | None:
     """Locate `quote` inside `comment` and return its canonical span.
 
-    Both arguments must already be canonical text. Returns None when the quote
-    is empty once folded, or when it cannot be found. The returned span always
-    satisfies `comment[start:end] == match.text`.
+    `comment` must already be canonical text, which is what the CSV reader
+    produces. `quote` arrives straight from the model, so it is canonicalised
+    here: without that, a model answering with a decomposed accent would have
+    its quote rejected against a comment holding the composed form, and the
+    failures file would show two strings that print identically.
+
+    Returns None when the quote is empty once folded, or when it cannot be
+    found. The returned span always satisfies
+    `comment[start:end] == match.text`.
     """
-    folded_quote, _ = fold(quote)
+    folded_quote, _ = fold(canonicalise(quote))
     if not folded_quote:
         return None
 

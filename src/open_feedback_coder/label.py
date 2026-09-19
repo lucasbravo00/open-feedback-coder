@@ -130,6 +130,17 @@ def assemble_comment_rows(comment, response: dict, codebook: Codebook) -> Commen
     """
     assignments = response.get("assignments") or []
 
+    if not isinstance(assignments, list) or not all(
+        isinstance(entry, dict) for entry in assignments
+    ):
+        return CommentOutcome(
+            failure=_failure(
+                comment,
+                "malformed_response",
+                "the model returned assignments in a shape this tool cannot read",
+            )
+        )
+
     if response.get("unassigned") or not assignments:
         return CommentOutcome(rows=[_unassigned_row(comment)])
 
@@ -245,6 +256,13 @@ def label_comments(
     codebook_text = render_codebook(codebook)
 
     def label_one(comment) -> CommentOutcome:
+        """Label one comment, and never raise.
+
+        An exception escaping here would leave `pool.map` and then `main`,
+        which writes no files at all, so one bad response would throw away
+        every other comment in the run along with the money already spent on
+        them. Whatever goes wrong, it goes wrong for this comment only.
+        """
         try:
             response, usage = client.complete_json(
                 system=LABEL_SYSTEM,
@@ -253,9 +271,25 @@ def label_comments(
                 schema_name="comment_labels",
             )
         except ModelError as error:
-            return CommentOutcome(failure=_failure(comment, "model_error", str(error)))
+            return CommentOutcome(
+                failure=_failure(comment, "model_error", str(error)),
+                usage=getattr(error, "usage", Usage()),
+            )
+        except Exception as error:
+            return CommentOutcome(
+                failure=_failure(comment, "model_error", f"{type(error).__name__}: {error}")
+            )
 
-        outcome = assemble_comment_rows(comment, response, codebook)
+        try:
+            outcome = assemble_comment_rows(comment, response, codebook)
+        except Exception as error:
+            return CommentOutcome(
+                failure=_failure(
+                    comment, "malformed_response", f"{type(error).__name__}: {error}"
+                ),
+                usage=usage,
+            )
+
         outcome.usage = usage
         return outcome
 

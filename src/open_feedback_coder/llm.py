@@ -23,10 +23,6 @@ class ConfigError(Exception):
     """Raised when the environment is not set up to call the model."""
 
 
-class ModelError(Exception):
-    """Raised when a model call fails or returns unusable output."""
-
-
 @dataclass(frozen=True)
 class Usage:
     """Token counts reported by the API for a single call."""
@@ -39,6 +35,19 @@ class Usage:
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
         )
+
+
+class ModelError(Exception):
+    """Raised when a model call fails or returns unusable output.
+
+    Carries whatever usage the API reported. A response that arrives and is
+    then rejected has already been billed, and a tool that reports token
+    counts has no business quietly leaving those tokens out of the total.
+    """
+
+    def __init__(self, message: str, usage: "Usage | None" = None):
+        super().__init__(message)
+        self.usage = usage or Usage()
 
 
 def resolve_model(explicit: str | None = None) -> str:
@@ -102,27 +111,47 @@ class Client:
         except Exception as error:
             raise ModelError(f"{type(error).__name__}: {error}") from error
 
-        choice = response.choices[0]
+        # Read usage first: every rejection below happens after the tokens
+        # have been spent, and the caller is told what the run cost.
+        usage = Usage()
+        reported = getattr(response, "usage", None)
+        if reported is not None:
+            usage = Usage(
+                input_tokens=reported.prompt_tokens or 0,
+                output_tokens=reported.completion_tokens or 0,
+            )
+
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise ModelError("The model returned no choices.", usage)
+
+        choice = choices[0]
         if getattr(choice, "finish_reason", None) == "length":
             raise ModelError(
                 "The model stopped because it hit its output limit, so the "
-                "response is incomplete."
+                "response is incomplete.",
+                usage,
             )
 
-        content = choice.message.content
+        content = getattr(getattr(choice, "message", None), "content", None)
         if not content:
-            raise ModelError("The model returned an empty response.")
+            raise ModelError("The model returned an empty response.", usage)
 
         try:
             parsed = json.loads(content)
         except json.JSONDecodeError as error:
-            raise ModelError(f"The model returned text that is not JSON: {error}") from error
+            raise ModelError(
+                f"The model returned text that is not JSON: {error}", usage
+            ) from error
 
-        usage = Usage()
-        if response.usage is not None:
-            usage = Usage(
-                input_tokens=response.usage.prompt_tokens or 0,
-                output_tokens=response.usage.completion_tokens or 0,
+        # The schema is sent with strict=True, so this should not happen. It is
+        # checked anyway because the alternative is an AttributeError deep in
+        # the caller, which would take down a whole labelling run.
+        if not isinstance(parsed, dict):
+            raise ModelError(
+                f"The model returned a JSON {type(parsed).__name__} where an "
+                "object was expected.",
+                usage,
             )
 
         return parsed, usage

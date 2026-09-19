@@ -42,8 +42,11 @@ These are properties of the code, checked by the test suite:
   located in that comment, the whole comment is excluded from the output and
   written to the failures file with the reason and the text the model
   returned.
-- **Counts are arithmetic.** Nothing in this tool asks a model how many of
-  anything there are. Frequencies are counted over the output rows.
+- **No number comes from the model.** The tool prints three counts —
+  comments labelled, comments unassigned, comments excluded — and tallies each
+  in code as the run goes. It does not compute frequencies for you. The long
+  format is there so that counting themes is a pivot table you build and can
+  check, rather than a number this tool hands you.
 
 What it does **not** tell you:
 
@@ -146,7 +149,12 @@ comments is information about your codebook, not noise to be cleared.
 `labelling_failures.csv` holds the comments that were excluded, with
 `failure_reason` one of: `quote_not_found_in_comment`, `unknown_theme_id`,
 `duplicate_theme`, `invalid_valence`, `no_primary_theme`,
-`multiple_primary_themes`, `too_many_secondary_themes`, `model_error`.
+`multiple_primary_themes`, `too_many_secondary_themes`, `malformed_response`,
+`model_error`.
+
+A comment can fail only in one of these ways and can never appear in both
+files: a failure ends the checks for that comment, and the two files are
+written from lists that are disjoint by construction.
 
 ## How a quote is checked
 
@@ -159,8 +167,14 @@ and what the offsets refer to.
 **On matching.** A quote is compared against the comment in a folded form that
 ignores differences models get wrong while copying, and nothing else:
 
+- the quote is put through the same NFC normalisation the comment already
+  went through, so a decomposed accent matches its composed form;
 - runs of whitespace (including tabs, newlines and non-breaking spaces)
   collapse to a single space, and leading and trailing whitespace is dropped;
+- invisible formatting characters — soft hyphen, zero-width space, zero-width
+  joiner and non-joiner, word joiner, byte-order mark — are removed rather
+  than folded to a space, so one sitting inside a word does not create a word
+  break that neither you nor the model can see;
 - curly quotes, primes and backticks fold to `'` and `"`;
 - en dashes, em dashes, figure dashes and minus signs fold to `-`.
 
@@ -183,11 +197,11 @@ Used to read text and propose language: which themes emerge from the corpus,
 which theme a comment belongs to, which span of the comment supports that, and
 whether the tone is positive, negative or neutral.
 
-Not used for anything else. Counts, frequencies and totals are computed in
-code over the output rows. Quote verification is string matching. Dropping
-empty and placeholder answers is a fixed list. The token count shown before a
-run is measured by encoding the text that will be sent; the cost figure is
-arithmetic over prices you supply.
+Not used for anything else. The three counts printed at the end of a run are
+tallied in code. Quote verification is string matching. Dropping empty and
+placeholder answers is a fixed list. The token count shown before a run is
+measured by encoding the text that will be sent; the cost figure is arithmetic
+over prices you supply.
 
 ## Definitions the tool commits to
 
@@ -205,9 +219,12 @@ Valence is per comment-theme pair, not per comment: one comment can be
 positive about pay and negative about onboarding, and both are recorded.
 
 At most three themes per comment (one primary, up to two secondary), and at
-most `--max-themes` themes in a proposed codebook (default 15). Both are caps,
-and when the model exceeds them the excess is discarded and reported rather
-than dropped quietly.
+most `--max-themes` themes in a proposed codebook (default 15). Both report it
+when the model overshoots, but they do different things about it. A proposal
+longer than the cap is truncated to the cap, and the number dropped is printed.
+A comment handed more than two secondary themes is excluded whole into the
+failures file under `too_many_secondary_themes`, because there is no
+principled way to choose which of the surplus themes to discard.
 
 ## Size of a run
 
