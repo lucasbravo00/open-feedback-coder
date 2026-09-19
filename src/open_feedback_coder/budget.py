@@ -85,8 +85,10 @@ class Estimate:
                 "   <- pass --price-in and --price-out (USD per 1M tokens) to see one"
             )
         else:
+            # A small run rounds to $0.00 at two decimals, which reads as free.
+            shown = f"${cost:,.2f}" if cost >= 0.01 else f"${cost:.4f}"
             lines.append(
-                f"  estimated cost           ${cost:,.2f}"
+                f"  estimated cost           {shown}"
                 f"   <- at ${self.price_in}/1M in, ${self.price_out}/1M out"
             )
         if not self.encoding_is_exact:
@@ -110,8 +112,13 @@ def check_input_limit(estimate: Estimate, max_input_tokens: int | None) -> None:
         )
 
 
-def confirm(estimate: Estimate, assume_yes: bool, stream=sys.stderr) -> None:
-    """Print the estimate and ask to continue, unless --yes was given."""
+def confirm(estimate: Estimate, assume_yes: bool, stream=None) -> None:
+    """Print the estimate and ask to continue, unless --yes was given.
+
+    `stream` is resolved at call time rather than bound as a default, so the
+    estimate follows wherever stderr currently points.
+    """
+    stream = sys.stderr if stream is None else stream
     print(estimate.render(), file=stream)
 
     if assume_yes:
