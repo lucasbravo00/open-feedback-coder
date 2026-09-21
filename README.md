@@ -21,7 +21,8 @@ for character, inside the comment it came from.
 2. Proposes an editable codebook from the full corpus.
 3. Labels each comment with one primary theme, up to two secondary themes, a
    valence per theme, and a verified quote per theme.
-4. Writes one CSV of labels and one CSV of the comments it excluded.
+4. Writes one CSV of labels and one CSV of everything the checks refused.
+5. Counts the result, and draws a sample for you to read by hand.
 
 That is the whole scope. There is no segmentation by team, no anonymity
 threshold, no executive summary, no local model.
@@ -32,7 +33,8 @@ These are properties of the code, checked by the test suite:
 
 - **You approve the codebook.** Labelling reads the YAML file on disk. Themes
   you deleted cannot be assigned; themes you renamed are what appear in the
-  output.
+  output. What the model originally proposed is recorded in the codebook, so
+  `ofc label` can report what you changed rather than asking to be believed.
 - **Every label carries a quote.** A labelled row always has a non-empty
   quote, plus the character offsets where it was found.
 - **Every quote is verbatim.** For every labelled row in the output,
@@ -90,7 +92,11 @@ send and waits for you to confirm. Pass `--price-in` and `--price-out` (USD per
 million tokens, from your provider's pricing page) to also see a cost estimate;
 without them it reports tokens only rather than inventing a number.
 
-Open `codebook.yaml`, edit it, then label:
+That writes two files. `codebook.yaml` is short — an id, a label and a
+description per theme — because it is the one you edit. `codebook.evidence.md`
+holds the quotes behind each theme, to read while you decide what to keep.
+
+Edit the codebook: rename, merge, delete. Then label:
 
 ```bash
 uv run ofc label --input responses.csv \
@@ -98,7 +104,31 @@ uv run ofc label --input responses.csv \
                  --codebook codebook.yaml
 ```
 
+`ofc label` reports what you changed — "15 proposed, 9 kept as proposed, 3
+relabelled, 6 deleted" — because a codebook a person approved should be able
+to show it, not just assert it. Rows are written as they are checked, so a run
+interrupted at comment 900 of 1000 leaves a valid file of the first 900 rather
+than nothing.
+
 You get `labelled.csv` and `labelling_failures.csv`.
+
+Then count them, and read a sample. Neither command calls a model, so both are
+free and work on a file produced months ago:
+
+```bash
+uv run ofc counts --labelled labelled.csv
+uv run ofc review --labelled labelled.csv --sample 20
+```
+
+`counts` gives comments per theme, split by primary and secondary and by
+valence. `review` prints twenty labels with each quote directly beneath the
+comment it came from, and writes `review.csv` with an empty `agree` column.
+The sample is drawn from a fixed seed, so working through it over several
+sittings gives you the same rows.
+
+`review` deliberately does not turn your answers into a score. A number
+computed by one reader on a sample they chose would look like validation, and
+it is not one.
 
 ### Graphical version
 
@@ -106,7 +136,10 @@ You get `labelled.csv` and `labelling_failures.csv`.
 uv run --extra ui streamlit run app.py
 ```
 
-Same steps, same checks, with the codebook in an editable table.
+Same steps, same checks, with the codebook in an editable table instead of a
+text editor. It will also open a `codebook.yaml` you already have, so you can
+propose on the command line and edit here; a codebook it would refuse on the
+command line is refused here too, with the same message.
 
 ## Reading your own CSV
 
@@ -196,6 +229,14 @@ cannot be located, the whole comment is excluded rather than published with
 its two surviving labels: a model that invented one quote has not earned trust
 on the others, and in a spreadsheet a partly verified row looks exactly like a
 fully verified one.
+
+A call that never produced an answer is a different matter, and is retried:
+connection errors, timeouts and rate limits are tried again with exponential
+backoff, up to `--max-retries` (default 3, and `0` turns it off), and the
+number of retries is reported at the end of the run. That is not a softening
+of the rule above. The rule is about the model's answer, where a second
+attempt at the same comment is a second chance to invent a quote; a dropped
+connection produced no answer to judge.
 
 One case is treated differently. A theme assigned twice to the same comment is
 a formatting slip rather than an invention — the repeat names nothing the
