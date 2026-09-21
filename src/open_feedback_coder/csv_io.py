@@ -254,7 +254,7 @@ def read_partial(path: str) -> tuple[list[dict], set[tuple], set[tuple]]:
     if not os.path.exists(path):
         return [], set(), set()
 
-    with open(path, newline="", encoding="utf-8") as handle:
+    with open(path, newline="", encoding=DEFAULT_ENCODING) as handle:
         rows = list(csv.DictReader(handle))
 
     # A short row means the write was cut off inside it. Only trailing ones
@@ -279,13 +279,26 @@ def comment_key(row) -> tuple:
     return (str(row.get("comment_id", "")), str(row.get("row_number", "")))
 
 
-def rewrite_atomically(path: str, columns: list[str], rows: list[dict]) -> None:
-    """Replace a file with `rows`, leaving the old one intact until it is whole.
+def same_file(first: str | None, second: str | None) -> bool:
+    """Whether two paths name the same file, however they are spelled.
 
-    Resuming truncates a file that may hold hundreds of paid-for rows. Writing
-    the survivors to a temporary file first and renaming it means an
-    interruption during the rewrite loses nothing.
+    String equality misses `out.csv` against `./out.csv`, an absolute
+    spelling against a relative one, and anything reached through a symlink or
+    a `..`. Two writers on one file destroy it, so the comparison has to be
+    about the file rather than about the text of the argument.
     """
+    if not first or not second:
+        return False
+    try:
+        if os.path.exists(first) and os.path.exists(second):
+            return os.path.samefile(first, second)
+    except OSError:
+        pass
+    return os.path.realpath(first) == os.path.realpath(second)
+
+
+def _stage(path: str, columns: list[str], rows: list[dict]) -> str:
+    """Write `rows` to a temporary file beside `path` and return its name."""
     directory = os.path.dirname(os.path.abspath(path)) or "."
     handle = tempfile.NamedTemporaryFile(
         "w", newline="", encoding="utf-8", dir=directory, delete=False
@@ -297,11 +310,39 @@ def rewrite_atomically(path: str, columns: list[str], rows: list[dict]) -> None:
             writer.writerows(rows)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(handle.name, path)
     except BaseException:
         if os.path.exists(handle.name):
             os.unlink(handle.name)
         raise
+    return handle.name
+
+
+def rewrite_all(replacements) -> None:
+    """Replace several files, staging every one before replacing any.
+
+    Two files cannot be swapped in one atomic step, but everything expensive
+    can happen before the first one is touched. Staging them all first leaves
+    only the renames themselves between a consistent before and a consistent
+    after, instead of a whole file write.
+
+    `replacements` is a sequence of (path, columns, rows).
+    """
+    staged: list[tuple[str, str]] = []
+    try:
+        for path, columns, rows in replacements:
+            staged.append((_stage(path, columns, rows), path))
+        for temporary, path in staged:
+            os.replace(temporary, path)
+    except BaseException:
+        for temporary, _ in staged:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        raise
+
+
+def rewrite_atomically(path: str, columns: list[str], rows: list[dict]) -> None:
+    """Replace one file with `rows`, leaving the old one intact until whole."""
+    rewrite_all([(path, columns, rows)])
 
 
 def write_rows(path: str | None, columns: list[str], rows: list[dict]) -> None:

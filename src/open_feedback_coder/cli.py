@@ -25,7 +25,9 @@ from .csv_io import (
     comment_key,
     read_comments,
     read_partial,
+    rewrite_all,
     rewrite_atomically,
+    same_file,
     write_rows,
 )
 from .llm import DEFAULT_MAX_RETRIES, Client, ConfigError, ModelError
@@ -237,7 +239,7 @@ def command_propose(args) -> int:
 
 
 def command_label(args) -> int:
-    if args.output and args.output == args.failures:
+    if same_file(args.output, args.failures):
         raise InputError(
             "--output and --failures cannot be the same file: both are opened for "
             "writing at once and would truncate each other. Nothing was sent."
@@ -275,11 +277,41 @@ def command_label(args) -> int:
         # before either is trusted: otherwise a comment is deleted from one
         # file, marked finished by the other, and never comes back.
         unsafe = unsafe_output | unsafe_failures
-        finished = (from_output | from_failures) - unsafe
-        kept_rows = [row for row in kept_rows if comment_key(row) not in unsafe]
+
+        # What counts as evidence that a comment was finished: rows in the
+        # output, or a rejection that excluded it whole. An assignment-scope
+        # row only says a repeat was dropped; that comment's labels live in
+        # the other file, and if they are not there it was not finished. This
+        # is what makes a half-applied restore recoverable rather than a
+        # silent loss.
+        excluded = {
+            comment_key(row) for row in kept_rejections if row.get("scope") == "comment"
+        }
+        finished = (from_output | excluded) - unsafe
+
+        kept_rows = [row for row in kept_rows if comment_key(row) in finished]
         kept_rejections = [
-            row for row in kept_rejections if comment_key(row) not in unsafe
+            row for row in kept_rejections if comment_key(row) in finished
         ]
+
+        in_this_input = {
+            (comment.comment_id, str(comment.row_number)) for comment in comments
+        }
+
+        # The unsafe comments are dropped from the files on the promise that
+        # this run redoes them. A run can only redo what its input contains,
+        # so an unsafe comment that is not in the input would be deleted and
+        # never replaced. Refuse rather than choose between losing paid-for
+        # rows and publishing a comment that may be missing a label.
+        unredoable = unsafe - in_this_input
+        if unredoable:
+            names = ", ".join(sorted(key[0] for key in unredoable)[:5])
+            raise InputError(
+                f"{args.output} and {args.failures} were written from a different "
+                f"input: comment {names} is the last one recorded and is not in this "
+                "file, so it cannot be checked or redone. Nothing was changed. "
+                "Point --output and --failures somewhere else, or drop --resume."
+            )
 
         remaining = [
             comment
@@ -290,13 +322,6 @@ def command_label(args) -> int:
             f"Resuming: {_plural(len(finished), 'comment')} already done, "
             f"{_plural(len(remaining), 'comment')} to go."
         )
-
-        if finished and len(remaining) == len(comments):
-            raise InputError(
-                f"None of the comments already in {args.output} match this input. "
-                "Resuming would leave that file holding two different corpora. "
-                "Point --output somewhere else, or drop --resume to start again."
-            )
         if not remaining:
             _log("Nothing left to label.")
             return 0
@@ -318,9 +343,10 @@ def command_label(args) -> int:
     check_input_limit(estimate, args.max_input_tokens)
     confirm(estimate, args.yes)
 
-    # Only now, once the run is certainly going ahead.
-    for path, columns, rows in restore:
-        rewrite_atomically(path, columns, rows)
+    # Only now, once the run is certainly going ahead, and both files staged
+    # before either is replaced.
+    if restore:
+        rewrite_all(restore)
 
     def progress(done: int, total: int) -> None:
         if done == total or done % 25 == 0:
@@ -399,10 +425,25 @@ def _read_labelled(path: str) -> list[dict]:
     if not rows:
         raise InputError(f"{path} has no rows.")
 
-    # theme_id is the column that tells a labelled file from every other file
-    # this tool writes: the review sheet carries comment_id, assignment and
-    # quote too, and counting it merges every theme into one fabricated row.
-    required = ("comment_id", "assignment", "theme_id", "theme_label", "quote")
+    # A review sheet carries comment_id, assignment, theme_id and quote as
+    # well, so those cannot tell the two apart. The offsets can: they exist
+    # only in a labelled file. And a sheet is recognised positively by the two
+    # columns a person writes into, so the error can say what it actually is.
+    if "agree" in rows[0] and "notes" in rows[0]:
+        raise InputError(
+            f"{path} is a review sheet, not a labelled file. Point --labelled at "
+            "the file `ofc label` wrote."
+        )
+
+    required = (
+        "comment_id",
+        "assignment",
+        "theme_id",
+        "theme_label",
+        "quote",
+        "quote_start",
+        "quote_end",
+    )
     missing = [column for column in required if column not in rows[0]]
     if missing:
         raise InputError(
@@ -413,6 +454,11 @@ def _read_labelled(path: str) -> list[dict]:
 
 
 def command_counts(args) -> int:
+    if same_file(args.output, args.labelled):
+        raise InputError(
+            "--output would overwrite the labelled file this reads. Nothing was written."
+        )
+
     rows = _read_labelled(args.labelled)
     counts = counting.count(rows)
 
@@ -432,6 +478,11 @@ def command_counts(args) -> int:
 
 
 def command_review(args) -> int:
+    if same_file(args.output, args.labelled):
+        raise InputError(
+            "--output would overwrite the labelled file this reads. Nothing was written."
+        )
+
     rows = _read_labelled(args.labelled)
     chosen = reviewing.sample(
         rows, args.sample, seed=args.seed, include_unassigned=args.include_unassigned
@@ -464,7 +515,9 @@ def command_review(args) -> int:
 
     sheet = reviewing.to_review_rows(chosen, marks)
     orphans = reviewing.orphaned_marks(chosen, marks)
-    write_rows(args.output, reviewing.REVIEW_COLUMNS, sheet + orphans)
+    # The file being replaced holds marks somebody typed. Truncating it and
+    # then writing puts that work at the mercy of whatever happens in between.
+    rewrite_atomically(args.output, reviewing.REVIEW_COLUMNS, sheet + orphans)
 
     if marks:
         carried = len(marks) - len(orphans)

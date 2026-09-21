@@ -11,7 +11,15 @@ from __future__ import annotations
 import csv
 
 from open_feedback_coder import cli
-from open_feedback_coder.reviewing import REVIEW_COLUMNS, render, sample, to_review_rows
+from open_feedback_coder.reviewing import (
+    REVIEW_COLUMNS,
+    existing_marks,
+    mark_key,
+    orphaned_marks,
+    render,
+    sample,
+    to_review_rows,
+)
 
 
 def row(comment_id, assignment="primary", theme_label="Pay", quote="the pay is fine"):
@@ -267,8 +275,12 @@ def test_a_mark_whose_row_left_the_sample_is_kept_not_deleted(tmp_path, capsys):
     sheet = read_sheet(output)
     assert {entry["comment_id"] for entry in sheet} >= marked_before
     assert all(entry["agree"] == "yes" for entry in sheet if entry["comment_id"] in marked_before)
-    kept_out = [e for e in sheet if e["comment_text"] == "(not in the current sample)"]
+    kept_out = [e for e in sheet if e["in_sample"] == "no"]
     assert kept_out, "marks outside the sample must still be in the file"
+    assert all(e["quote"] and e["comment_text"] for e in kept_out), (
+        "a carried-over mark keeps the evidence it was made against"
+    )
+    assert all(e["in_sample"] == "yes" for e in sheet if e not in kept_out)
 
     message = capsys.readouterr().err
     assert "carrying 3 marks" in message
@@ -309,3 +321,53 @@ def test_a_review_sheet_with_a_byte_order_mark_keeps_its_marks(tmp_path):
     cli.main(arguments)
 
     assert all(entry["agree"] == "yes" for entry in read_sheet(output))
+
+
+def test_two_themes_sharing_a_label_keep_separate_marks():
+    """theme_label is not unique; the loader only enforces unique ids."""
+    first = dict(row("1"), theme_id="pay", theme_label="Money")
+    second = dict(row("1"), theme_id="benefits", theme_label="Money", assignment="secondary")
+
+    assert mark_key(first) != mark_key(second)
+
+
+def test_a_mark_does_not_follow_a_coding_that_changed():
+    """The reviewer judged a quote. Change the quote and the answer is about
+    something they never saw."""
+    judged = dict(row("1"), quote="the pay is fine", agree="yes", notes="")
+    marks = existing_marks([judged])
+    recoded = dict(row("1"), quote="the hours are not")
+
+    sheet = to_review_rows([recoded], marks)
+
+    assert sheet[0]["agree"] == "", "the old answer must not be transplanted"
+    assert orphaned_marks([recoded], marks), "and it must not be thrown away either"
+
+
+def test_review_refuses_to_write_over_the_file_it_reads(tmp_path):
+    labelled = write_labelled(tmp_path, ROWS)
+    before = labelled.read_text(encoding="utf-8")
+
+    assert cli.main(
+        ["review", "--labelled", str(labelled), "--output", str(labelled)]
+    ) == 1
+    assert labelled.read_text(encoding="utf-8") == before
+
+
+def test_counts_refuses_to_write_over_the_file_it_reads(tmp_path):
+    labelled = write_labelled(tmp_path, ROWS)
+    before = labelled.read_text(encoding="utf-8")
+
+    assert cli.main(
+        ["counts", "--labelled", str(labelled), "--output", str(labelled)]
+    ) == 1
+    assert labelled.read_text(encoding="utf-8") == before
+
+
+def test_a_review_sheet_is_recognised_and_named_as_one(tmp_path, capsys):
+    labelled = write_labelled(tmp_path, ROWS)
+    sheet = tmp_path / "review.csv"
+    cli.main(["review", "--labelled", str(labelled), "--sample", "5", "--output", str(sheet)])
+
+    assert cli.main(["counts", "--labelled", str(sheet)]) == 1
+    assert "is a review sheet" in capsys.readouterr().err

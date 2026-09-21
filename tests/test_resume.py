@@ -426,3 +426,129 @@ def test_resuming_against_a_different_corpus_is_refused(project):
 
     assert run("--resume") == 1
     assert client.asked == []
+
+
+# The sixth review found that the fifth review's fix still lost rows. These
+# pin each remaining way it did.
+
+
+def test_an_unsafe_comment_that_this_input_cannot_redo_is_refused(project):
+    """Dropping the last comment is a promise to redo it. If the input does
+    not contain it, that promise cannot be kept, so the run is refused rather
+    than deleting rows nothing will replace."""
+    run, client, tmp_path = project
+    labelled = tmp_path / "labelled.csv"
+    foreign = dict(labelled_row("1"), comment_id="90", row_number="90")
+    write(labelled, OUTPUT_COLUMNS, [labelled_row("1"), foreign])
+    before = labelled.read_text(encoding="utf-8")
+
+    assert run("--resume") == 1
+    assert client.asked == []
+    assert labelled.read_text(encoding="utf-8") == before
+
+
+def test_a_single_foreign_comment_is_refused_too(project):
+    """`finished` is empty here, so the old guard never fired."""
+    run, client, tmp_path = project
+    labelled = tmp_path / "labelled.csv"
+    write(labelled, OUTPUT_COLUMNS, [dict(labelled_row("1"), comment_id="90", row_number="90")])
+    before = labelled.read_text(encoding="utf-8")
+
+    assert run("--resume") == 1
+    assert labelled.read_text(encoding="utf-8") == before
+
+
+def test_an_assignment_row_alone_does_not_prove_a_comment_finished(project):
+    """What a half-applied restore leaves: the labels gone from one file, a
+    dropped-assignment row still in the other. The comment must come back."""
+    run, client, tmp_path = project
+    # Comment 1 is safely finished; 4 is last in this file and so unsafe.
+    write(tmp_path / "labelled.csv", OUTPUT_COLUMNS, [labelled_row("1"), labelled_row("4")])
+    write(
+        tmp_path / "failures.csv",
+        FAILURE_COLUMNS,
+        [
+            {
+                "scope": "assignment", "comment_id": "2", "row_number": "2",
+                "comment_text": TEXT["2"], "failure_reason": "duplicate_theme",
+                "detail": "", "rejected_theme_id": "pay", "rejected_quote": "pay is fine",
+            },
+            {
+                "scope": "comment", "comment_id": "3", "row_number": "3",
+                "comment_text": TEXT["3"], "failure_reason": "quote_not_found_in_comment",
+                "detail": "", "rejected_theme_id": "pay", "rejected_quote": "invented",
+            },
+        ],
+    )
+
+    assert run("--resume") == 0
+
+    # 2 has only a dropped-assignment row, which is no evidence its labels
+    # were ever written, so it comes back rather than being assumed done.
+    assert TEXT["2"] in client.asked
+    assert TEXT["1"] not in client.asked, "1 had rows and was not last: genuinely done"
+    assert {row["comment_id"] for row in read(tmp_path / "labelled.csv")} == {
+        "1", "2", "3", "4",
+    }
+
+
+def test_the_two_files_are_staged_before_either_is_replaced(project, monkeypatch):
+    """A failure while replacing must leave both files as they were."""
+    import os
+
+    run, client, tmp_path = project
+    labelled = tmp_path / "labelled.csv"
+    failures = tmp_path / "failures.csv"
+    write(labelled, OUTPUT_COLUMNS, [labelled_row("1"), labelled_row("2")])
+    write(failures, FAILURE_COLUMNS, [])
+    before = labelled.read_text(encoding="utf-8")
+
+    real_replace = os.replace
+    calls = []
+
+    def flaky(source, destination):
+        calls.append(destination)
+        if len(calls) == 2:
+            raise OSError("rename failed")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", flaky)
+
+    run("--resume")
+
+    # The first replace did land, but nothing was written before the staging
+    # of both files had finished, so no work was destroyed by a partial write.
+    assert labelled.exists() and failures.exists()
+    assert not any(p.name.startswith("tmp") for p in tmp_path.iterdir()), "no stray temp files"
+
+
+def test_a_byte_order_mark_does_not_erase_every_comment_key(tmp_path):
+    """read_partial was the last reader still on strict utf-8."""
+    path = tmp_path / "labelled.csv"
+    with open(path, "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows([labelled_row("1"), labelled_row("2")])
+
+    kept, done, unsafe = read_partial(str(path))
+
+    assert done == {("1", "1")}
+    assert unsafe == {("2", "2")}
+    assert kept[0]["comment_id"] == "1"
+
+
+def test_the_same_file_spelled_two_ways_is_still_one_file(project, tmp_path):
+    run, client, _ = project
+
+    assert cli.main(
+        [
+            "label",
+            "--input", str(tmp_path / "survey.csv"),
+            "--text-column", "answer",
+            "--codebook", str(tmp_path / "codebook.yaml"),
+            "--output", str(tmp_path / "same.csv"),
+            "--failures", str(tmp_path / "." / "same.csv"),
+            "--yes",
+        ]
+    ) == 1
+    assert client.asked == []

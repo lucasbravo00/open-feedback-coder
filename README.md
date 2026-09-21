@@ -165,6 +165,11 @@ and redoes the last one in each — a run that was killed may have written some
 of a comment's rows and not the rest, and one comment is cheaper than one
 comment published with two of its three labels.
 
+A comment counts as done only on evidence that its whole result was written:
+rows in the output, or a rejection that excluded it. If those files were
+written from a different input, so that the comment to redo is not in this
+one, the run is refused rather than deleting rows nothing will replace.
+
 `ofc label` reports what you changed — "15 proposed, 6 kept as proposed, 3
 relabelled, 6 deleted" — because a codebook a person approved should be able
 to show it, not just assert it. Rows are written as they are checked, so a run

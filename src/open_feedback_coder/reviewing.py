@@ -26,10 +26,12 @@ REVIEW_COLUMNS = [
     "comment_id",
     "row_number",
     "assignment",
+    "theme_id",
     "theme_label",
     "valence",
     "quote",
     "comment_text",
+    "in_sample",
     "agree",
     "notes",
 ]
@@ -56,23 +58,35 @@ def sample(rows, size: int, seed: int = 0, include_unassigned: bool = False) -> 
 
 
 def mark_key(row) -> tuple:
-    """What identifies one line of a review sheet across re-runs."""
+    """What identifies one judgement across re-runs.
+
+    A mark is an answer to a specific question: does this quote support this
+    theme, with this valence, on this comment? All of that is in the key. Two
+    themes may share a label, so the id is here as well as the label; and the
+    quote and the valence are here because they are what the reviewer looked
+    at. Relabel the corpus and the old answers no longer apply to the new
+    codings - they become marks about something that is no longer on the
+    sheet, rather than answers transplanted onto a coding nobody saw.
+    """
     return (
         str(row.get("comment_id", "")),
         str(row.get("row_number", "")),
         str(row.get("assignment", "")),
+        str(row.get("theme_id", "")),
         str(row.get("theme_label", "")),
+        str(row.get("valence", "")),
+        str(row.get("quote", "")),
     )
 
 
 def existing_marks(rows) -> dict:
-    """The agree and notes already written into a sheet, keyed by line."""
+    """Every marked line of a sheet, whole, keyed by what it judged."""
     marks = {}
     for row in rows:
         agree = str(row.get("agree", "") or "").strip()
         notes = str(row.get("notes", "") or "").strip()
         if agree or notes:
-            marks[mark_key(row)] = {"agree": agree, "notes": notes}
+            marks[mark_key(row)] = dict(row, agree=agree, notes=notes)
     return marks
 
 
@@ -87,10 +101,12 @@ def to_review_rows(rows, marks: dict | None = None) -> list[dict]:
                 "comment_id": row.get("comment_id", ""),
                 "row_number": row.get("row_number", ""),
                 "assignment": row.get("assignment", ""),
+                "theme_id": row.get("theme_id", ""),
                 "theme_label": row.get("theme_label", ""),
                 "valence": row.get("valence", ""),
                 "quote": row.get("quote", ""),
                 "comment_text": row.get("comment_text", ""),
+                "in_sample": "yes",
                 "agree": mark.get("agree", ""),
                 "notes": mark.get("notes", ""),
             }
@@ -103,22 +119,14 @@ def orphaned_marks(rows, marks: dict) -> list[dict]:
 
     A smaller sample, a different seed or a relabelled corpus leaves marks
     with no row to sit on. Dropping them would delete work somebody did by
-    hand, so they are kept at the end of the sheet, where they can be read and
-    deleted deliberately.
+    hand, so they are kept at the end of the sheet exactly as they were
+    written, quote and all, marked `in_sample = no` so they are not mistaken
+    for part of the current sample, and left there to be read against the new
+    coding and deleted deliberately.
     """
     present = {mark_key(row) for row in rows}
     return [
-        {
-            "comment_id": key[0],
-            "row_number": key[1],
-            "assignment": key[2],
-            "theme_label": key[3],
-            "valence": "",
-            "quote": "",
-            "comment_text": "(not in the current sample)",
-            "agree": mark["agree"],
-            "notes": mark["notes"],
-        }
+        dict({column: mark.get(column, "") for column in REVIEW_COLUMNS}, in_sample="no")
         for key, mark in marks.items()
         if key not in present
     ]
