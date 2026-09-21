@@ -14,12 +14,14 @@ import csv
 import io
 import os
 
+import yaml
+
 import pandas as pd
 import streamlit as st
 
 from open_feedback_coder import label as label_step, propose as propose_step
 from open_feedback_coder.budget import TokenCounter
-from open_feedback_coder.codebook import CodebookError, to_yaml
+from open_feedback_coder.codebook import CodebookError, from_dict, to_yaml
 from open_feedback_coder.csv_io import (
     FAILURE_COLUMNS,
     OUTPUT_COLUMNS,
@@ -151,9 +153,7 @@ with st.expander("Preview"):
         hide_index=True,
     )
 
-st.subheader("2. Propose a codebook")
-
-max_themes = st.slider("Maximum themes to propose", 3, 40, DEFAULT_MAX_THEMES)
+st.subheader("2. Get a codebook")
 
 try:
     client = Client(model=model_override or None)
@@ -162,30 +162,62 @@ except ConfigError as error:
     st.stop()
 
 counter = TokenCounter(client.model)
-estimate = propose_step.build_estimate(
-    comments, counter, max_themes, price_in or None, price_out or None
-)
-st.code(estimate.render(), language="text")
 
-if st.button("Propose codebook", type="primary"):
-    with st.spinner("Reading the whole corpus..."):
-        try:
-            st.session_state["proposal"] = propose_step.propose(comments, client, max_themes)
-        except ModelError as error:
-            st.error(str(error))
-            st.stop()
-    forget("run")
+# Either bring a codebook or make one. Bringing one is what lets `ofc propose`
+# on the command line be edited here rather than in a text editor.
+codebook_upload = st.file_uploader(
+    "Already have a codebook.yaml? Upload it to skip proposing.", type=["yaml", "yml"]
+)
+
+uploaded = None
+if codebook_upload is not None:
+    try:
+        uploaded = from_dict(
+            yaml.safe_load(decode_document(codebook_upload)),
+            origin=codebook_upload.name,
+        )
+    except (CodebookError, yaml.YAMLError, UnicodeDecodeError) as error:
+        st.error(f"That file is not a codebook this tool can read: {error}")
+        st.stop()
+
+if uploaded is None:
+    max_themes = st.slider("Maximum themes to propose", 3, 40, DEFAULT_MAX_THEMES)
+    estimate = propose_step.build_estimate(
+        comments, counter, max_themes, price_in or None, price_out or None
+    )
+    st.code(estimate.render(), language="text")
+
+    if st.button("Propose codebook", type="primary"):
+        with st.spinner("Reading the whole corpus..."):
+            try:
+                st.session_state["proposal"] = propose_step.propose(
+                    comments, client, max_themes
+                )
+            except ModelError as error:
+                st.error(str(error))
+                st.stop()
+        forget("run")
 
 result = st.session_state.get("proposal")
-if result is None:
-    st.stop()
 
-st.info(
-    f"{len(result.codebook.themes)} themes proposed. "
-    f"{sum(len(t.examples) for t in result.codebook.themes)} example quotes verified "
-    f"against the comments they came from, {len(result.rejected_examples)} rejected "
-    "and dropped."
-)
+if uploaded is not None:
+    starting_themes = uploaded.themes
+    examples_to_show = []
+    st.success(
+        f"Using the {len(starting_themes)} themes in {codebook_upload.name}. "
+        "Nothing was sent to the model for this step."
+    )
+elif result is not None:
+    starting_themes = result.codebook.themes
+    examples_to_show = result.codebook.themes
+    st.info(
+        f"{len(starting_themes)} themes proposed. "
+        f"{sum(len(t.examples) for t in starting_themes)} example quotes verified "
+        f"against the comments they came from, {len(result.rejected_examples)} rejected "
+        "and dropped."
+    )
+else:
+    st.stop()
 
 st.subheader("3. Edit the codebook")
 st.caption(
@@ -198,7 +230,7 @@ edited = st.data_editor(
     pd.DataFrame(
         [
             {"id": theme.id, "label": theme.label, "description": theme.description}
-            for theme in result.codebook.themes
+            for theme in starting_themes
         ]
     ),
     num_rows="dynamic",
@@ -207,7 +239,7 @@ edited = st.data_editor(
     key="codebook_editor",
 )
 
-for theme in result.codebook.themes:
+for theme in examples_to_show:
     if theme.examples:
         with st.expander(f"Examples for {theme.label}"):
             for example in theme.examples:

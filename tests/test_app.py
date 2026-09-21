@@ -110,12 +110,20 @@ def app(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
     monkeypatch.setenv("OPENAI_MODEL", "stub-model")
     upload = Upload(SURVEY)
-    monkeypatch.setattr(streamlit, "file_uploader", lambda *a, **k: upload)
+    # Two uploaders now: the comments, and optionally an existing codebook.
+    # They are told apart by their label, as a person would.
+    uploads = {"csv": upload, "codebook": None}
+
+    def uploader(label, *args, **kwargs):
+        return uploads["codebook"] if "codebook" in label.lower() else uploads["csv"]
+
+    monkeypatch.setattr(streamlit, "file_uploader", uploader)
     monkeypatch.setattr(budget, "TokenCounter", StubCounter)
     monkeypatch.setattr(llm, "Client", StubClient)
 
     harness = AppTest.from_file(APP, default_timeout=60)
     harness.upload = upload
+    harness.uploads = uploads
     return harness
 
 
@@ -126,7 +134,7 @@ def test_an_upload_is_read_and_stays_readable(app):
     assert not app.exception, app.exception
     assert [error.value for error in app.error] == []
     assert not app.upload.closed
-    assert "2. Propose a codebook" in [s.value for s in app.subheader]
+    assert "2. Get a codebook" in [s.value for s in app.subheader]
 
 
 def test_a_rerun_reads_the_same_upload_again(app):
@@ -256,3 +264,59 @@ def test_the_results_survive_nothing_that_should_invalidate_them(app):
     app.run()
 
     assert [(m.label, m.value) for m in app.metric] == first
+
+
+class CodebookUpload(io.BytesIO):
+    name = "codebook.yaml"
+    file_id = "cb-1"
+    type = "text/yaml"
+
+
+CODEBOOK_YAML = b"""
+version: 1
+themes:
+  - id: hybrid_work
+    label: Hybrid work
+    description: Where people work from.
+  - id: tooling
+    label: Tooling
+    description: The software people are given.
+"""
+
+
+def test_a_codebook_made_elsewhere_can_be_brought_in(app):
+    """`ofc propose` on the command line, edited here instead of in a text editor."""
+    app.uploads["codebook"] = CodebookUpload(CODEBOOK_YAML)
+
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+
+    assert not app.exception, app.exception
+    assert any("Using the 2 themes in codebook.yaml" in s.value for s in app.success)
+    assert "3. Edit the codebook" in [s.value for s in app.subheader]
+    # No proposal was made, so nothing was sent for that step.
+    assert app.button[0].label == "Label comments"
+
+    editor = next(d.value for d in app.dataframe if "label" in d.value.columns)
+    assert list(editor["id"]) == ["hybrid_work", "tooling"]
+
+
+def test_a_brought_in_codebook_still_faces_the_loader(app):
+    app.uploads["codebook"] = CodebookUpload(b"themes:\n  - id: Bad Id\n    label: Nope\n")
+
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+
+    assert not app.exception, app.exception
+    assert any("lowercase" in error.value for error in app.error)
+    assert "3. Edit the codebook" not in [s.value for s in app.subheader]
+
+
+def test_a_file_that_is_not_a_codebook_is_refused(app):
+    app.uploads["codebook"] = CodebookUpload(b"just: some\nrandom: mapping\n")
+
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+
+    assert not app.exception, app.exception
+    assert any("not a codebook" in error.value for error in app.error)
