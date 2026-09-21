@@ -274,3 +274,85 @@ def test_one_file_spelled_two_ways_is_still_one_file(tmp_path, monkeypatch):
 
     assert exit_code == 1
     assert not (tmp_path / "same.csv").exists()
+
+
+def test_declining_the_confirmation_leaves_the_output_alone(tmp_path, monkeypatch, capsys):
+    """Opening the writers starts the files again, so the confirmation has to
+    come first: a run that says nothing was sent must have changed nothing."""
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: ScriptedClient({}))
+    monkeypatch.setattr(
+        cli,
+        "TokenCounter",
+        lambda model: type("C", (), {"is_exact": True, "count": lambda self, t: 1})(),
+    )
+
+    input_path = tmp_path / "survey.csv"
+    with open(input_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["rid", "answer"])
+        writer.writeheader()
+        for comment_id, text in TEXT.items():
+            writer.writerow({"rid": comment_id, "answer": text})
+
+    codebook_path = tmp_path / "codebook.yaml"
+    codebook_path.write_text("themes:\n  - id: pay\n    label: Pay\n", encoding="utf-8")
+
+    output_path = tmp_path / "labelled.csv"
+    output_path.write_text("something a previous run wrote\n", encoding="utf-8")
+    before = output_path.read_text(encoding="utf-8")
+
+    def decline(estimate, assume_yes, stream=None):
+        raise cli.Cancelled("Nothing was sent.")
+
+    monkeypatch.setattr(cli, "confirm", decline)
+
+    exit_code = cli.main(
+        [
+            "label",
+            "--input", str(input_path),
+            "--text-column", "answer",
+            "--id-column", "rid",
+            "--codebook", str(codebook_path),
+            "--output", str(output_path),
+            "--failures", str(tmp_path / "failures.csv"),
+        ]
+    )
+
+    assert exit_code == 130
+    assert output_path.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "failures.csv").exists()
+    assert "Nothing was sent." in capsys.readouterr().err
+
+
+def test_an_output_path_that_cannot_be_written_is_an_error_not_a_traceback(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: ScriptedClient({"1": CLEAN}))
+    monkeypatch.setattr(
+        cli,
+        "TokenCounter",
+        lambda model: type("C", (), {"is_exact": True, "count": lambda self, t: 1})(),
+    )
+
+    input_path = tmp_path / "survey.csv"
+    with open(input_path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["rid", "answer"])
+        writer.writeheader()
+        writer.writerow({"rid": "1", "answer": TEXT["1"]})
+
+    codebook_path = tmp_path / "codebook.yaml"
+    codebook_path.write_text("themes:\n  - id: onboarding\n    label: Onboarding\n", encoding="utf-8")
+
+    exit_code = cli.main(
+        [
+            "label",
+            "--input", str(input_path),
+            "--text-column", "answer",
+            "--id-column", "rid",
+            "--codebook", str(codebook_path),
+            "--output", str(tmp_path / "no_such_directory" / "labelled.csv"),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 1
+    assert "error:" in capsys.readouterr().err

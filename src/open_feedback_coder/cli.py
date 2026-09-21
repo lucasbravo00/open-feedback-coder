@@ -144,7 +144,10 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _report_input(comments, skipped, args) -> None:
-    _log(f"Read {len(comments):,} comments from {args.input} (column {args.text_column!r}).")
+    _log(
+        f"Read {_plural(len(comments), 'comment')} from {args.input} "
+        f"(column {args.text_column!r})."
+    )
     if skipped.total:
         detail = [f"{skipped.empty} empty"] if skipped.empty else []
         if skipped.placeholder:
@@ -184,7 +187,7 @@ def command_propose(args) -> int:
     verified = sum(len(theme.examples) for theme in result.codebook.themes)
     rejected = len(result.rejected_examples)
     _log()
-    _log(f"Proposed {len(result.codebook.themes)} themes.")
+    _log(f"Proposed {_plural(len(result.codebook.themes), 'theme')}.")
     _log(
         f"Example quotes: {verified} verified against the source comments, "
         f"{rejected} rejected and dropped."
@@ -252,7 +255,9 @@ def command_label(args) -> int:
         encoding=args.encoding,
     )
     _report_input(comments, skipped, args)
-    _log(f"Using {len(book.themes)} approved themes from {args.codebook}.")
+    _log(
+        f"Using {_plural(len(book.themes), 'approved theme')} from {args.codebook}."
+    )
 
     approval = compare_with_proposal(book)
     if approval is not None:
@@ -270,6 +275,8 @@ def command_label(args) -> int:
         comments, book, counter, args.price_in, args.price_out
     )
     check_input_limit(estimate, args.max_input_tokens)
+    # Before the writers open, because opening them starts the output files
+    # again. A run that stops here must leave whatever was there alone.
     confirm(estimate, args.yes)
 
     def progress(done: int, total: int) -> None:

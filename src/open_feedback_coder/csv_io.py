@@ -191,7 +191,10 @@ def read_comments(
 
 
 class RowWriter:
-    """Append rows to a CSV as they are produced, header first.
+    """Write rows to a CSV as they are produced, header first.
+
+    The file is started again: a second run over the same --output replaces
+    what the first one wrote rather than adding to it.
 
     A labelling run makes one paid call per comment, and used to hold every
     result in memory until the last one arrived. A run that died at comment

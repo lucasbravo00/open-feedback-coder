@@ -125,3 +125,42 @@ def test_same_file_works_before_either_file_exists(tmp_path):
     """The guards run before the run does, so neither path is on disk yet."""
     assert same_file(f"{tmp_path}/a.csv", f"{tmp_path}/./a.csv")
     assert not same_file(f"{tmp_path}/a.csv", f"{tmp_path}/b.csv")
+
+
+# Deleting the resume tests took three properties with them that have nothing
+# to do with resuming. Each of these fails if its property is broken.
+
+
+def test_a_writer_starts_an_existing_file_again(tmp_path):
+    """The only mode RowWriter has, and the whole of how a re-run behaves."""
+    from open_feedback_coder.csv_io import RowWriter
+
+    path = tmp_path / "labelled.csv"
+    write(path, [a_row("1"), a_row("2")])
+
+    with RowWriter(str(path), OUTPUT_COLUMNS) as writer:
+        writer.write([a_row("9")])
+
+    assert [row["comment_id"] for row in read(path)] == ["9"]
+    assert path.read_text(encoding="utf-8").count("comment_id,row_number") == 1
+
+
+def test_same_file_follows_a_symlink(tmp_path):
+    """A lexical comparison cannot see this, and two writers on one file
+    destroy it whichever name each of them used."""
+    target = tmp_path / "labelled.csv"
+    target.write_text("x", encoding="utf-8")
+    link = tmp_path / "link.csv"
+    link.symlink_to(target)
+
+    assert same_file(str(target), str(link))
+    assert same_file(str(link), str(target))
+
+
+def test_same_file_on_a_symlink_to_nowhere(tmp_path):
+    """Neither path resolves to a file, so it must not crash or say yes."""
+    dangling = tmp_path / "dangling.csv"
+    dangling.symlink_to(tmp_path / "absent.csv")
+
+    assert not same_file(str(dangling), str(tmp_path / "other.csv"))
+    assert same_file(str(dangling), str(dangling))
