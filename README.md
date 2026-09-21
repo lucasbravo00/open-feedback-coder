@@ -4,8 +4,8 @@ Thematic coding of open-ended feedback — climate survey comments, exit
 interview notes, free-text form answers — where every label can be traced back
 to the words that produced it.
 
-Two commands. The first reads the whole corpus and proposes a codebook. You
-edit that codebook by hand: rename themes, merge the ones that say the same
+Two commands do the work. The first reads the whole corpus and proposes a
+codebook. You edit it by hand: rename themes, merge the ones that say the same
 thing, delete the ones you do not want. The second labels every comment
 against the themes you approved, and attaches to each label the quote from the
 comment that supports it.
@@ -60,6 +60,33 @@ What it does **not** tell you:
   read a sample of the labelled rows against their comments first. The output
   is built to make that cheap — the quote and its source text sit in the same
   row.
+
+### How much this has been run
+
+How much use a tool has had is worth as much to you as what its tests check,
+so plainly:
+
+- It has been run end to end against **one** model — `gpt-5.2` — over **one**
+  corpus of 41 real comments. It has not been run at a thousand.
+- Nobody but the person who wrote it has run it on their own data.
+- The test suite runs offline against a stand-in for the model. It covers this
+  tool's own logic. It cannot cover how any given model behaves.
+
+Two consequences worth knowing before you spend anything.
+
+`OPENAI_MODEL` has to name a model that supports strict JSON schema structured
+outputs. One that does not fails on the first call with the provider's own
+error, before any output file is touched, so the failure is cheap and loud —
+but it is a failure, and no flag works around it.
+
+And the first run against a real model found a fault no offline test could
+have. The corpus was rendered with each comment id in brackets; the model
+answered with the brackets included; every quote it returned was rejected as
+belonging to a comment that did not exist. The stub used the same format the
+code expected and so agreed with the thing it was meant to check. Expect a
+first run against an untried model, or an unusual corpus, to turn up something
+of that shape. The checks are built so that it costs you a rejected row and an
+explanation in the failures file rather than a wrong answer in the output.
 
 ## Where your data goes
 
