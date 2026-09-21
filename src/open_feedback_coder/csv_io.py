@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import csv
 import io
+import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 
 from .text import canonicalise
@@ -195,21 +197,25 @@ class RowWriter:
     disk, and the partial file is a valid CSV.
     """
 
-    def __init__(self, path: str | None, columns: list[str]):
+    def __init__(self, path: str | None, columns: list[str], append: bool = False):
         self.path = path
         self.columns = columns
+        self.append = append
         self._handle = None
         self._writer = None
 
     def __enter__(self) -> "RowWriter":
         if self.path is None:
             return self
-        self._handle = open(self.path, "w", newline="", encoding="utf-8")
+        self._handle = open(
+            self.path, "a" if self.append else "w", newline="", encoding="utf-8"
+        )
         self._writer = csv.DictWriter(
             self._handle, fieldnames=self.columns, extrasaction="ignore"
         )
-        self._writer.writeheader()
-        self._handle.flush()
+        if not self.append:
+            self._writer.writeheader()
+            self._handle.flush()
         return self
 
     def write(self, rows) -> None:
@@ -223,6 +229,66 @@ class RowWriter:
             self._handle.close()
             self._handle = None
             self._writer = None
+
+
+def read_partial(path: str) -> tuple[list[dict], set[tuple]]:
+    """Read a partial output file, and say which comments are safely finished.
+
+    The rows of the last comment in the file are dropped and its key is not
+    returned. A run killed mid-write may have flushed only some of a comment's
+    rows, and a comment published with two of its three labels is exactly what
+    the all-or-nothing rule exists to prevent. Redoing one comment costs one
+    call; trusting a truncated one costs the guarantee.
+
+    Returns the rows worth keeping and the keys of the comments they cover.
+    A file that does not exist is simply an empty partial run.
+    """
+    if not os.path.exists(path):
+        return [], set()
+
+    with open(path, newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+
+    if not rows:
+        return [], set()
+
+    last_key = comment_key(rows[-1])
+    kept = [row for row in rows if comment_key(row) != last_key]
+    return kept, {comment_key(row) for row in kept}
+
+
+def comment_key(row) -> tuple:
+    """What identifies a comment across the input and the output files.
+
+    The row number is part of it because an id column supplied by the user is
+    not guaranteed to be unique, while a row number always is.
+    """
+    return (str(row.get("comment_id", "")), str(row.get("row_number", "")))
+
+
+def rewrite_atomically(path: str, columns: list[str], rows: list[dict]) -> None:
+    """Replace a file with `rows`, leaving the old one intact until it is whole.
+
+    Resuming truncates a file that may hold hundreds of paid-for rows. Writing
+    the survivors to a temporary file first and renaming it means an
+    interruption during the rewrite loses nothing.
+    """
+    directory = os.path.dirname(os.path.abspath(path)) or "."
+    handle = tempfile.NamedTemporaryFile(
+        "w", newline="", encoding="utf-8", dir=directory, delete=False
+    )
+    try:
+        with handle:
+            writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(handle.name, path)
+    except BaseException:
+        if os.path.exists(handle.name):
+            os.unlink(handle.name)
+        raise
 
 
 def write_rows(path: str | None, columns: list[str], rows: list[dict]) -> None:

@@ -61,6 +61,50 @@ What it does **not** tell you:
   is built to make that cheap — the quote and its source text sit in the same
   row.
 
+## Where your data goes
+
+This tool sends the text you give it to OpenAI. For open-ended feedback from
+employees that is the first thing anyone will ask about, so here is exactly
+what leaves the machine and when.
+
+**`ofc propose`** sends the whole corpus in a single request: the instructions
+plus every comment, in full. Proposing a codebook means reading everything,
+and there is no sampling.
+
+**`ofc label`** sends one request per comment: the instructions, your approved
+codebook, and that one comment's text. Over a run, every comment is sent
+again.
+
+**`ofc counts` and `ofc review` send nothing.** They read a CSV that already
+exists and make no network calls at all.
+
+**Nothing is redacted.** There is no detection of names, emails or anything
+else, and this version does not try: rule-based redaction that misses things
+is worse than none, because it invites the belief that the text was cleaned.
+What is in the column you name is what gets sent. Empty cells and the
+placeholder answers listed above are dropped before any request, so those
+never leave your machine, and that is the only filtering there is.
+
+**What the provider then does with it is between you and them.** Retention,
+whether the content can be used for training, and whether a zero-retention or
+enterprise arrangement applies all depend on your account and your agreement.
+This README will not summarise those terms, because they change and because
+getting them wrong here would be worse than saying nothing: read
+<https://platform.openai.com/docs/> and whatever your organisation has signed.
+
+**There is no offline mode.** If this text cannot leave your infrastructure,
+this tool cannot help you in this version, and no flag changes that.
+
+**The outputs carry the feedback too.** `labelled.csv` and
+`labelling_failures.csv` contain the full text of every comment, and
+`codebook.evidence.md` and `review.csv` contain verbatim quotes. Treat all of
+them the way you treat the source file. `data/` is in `.gitignore`; your
+output files are wherever you pointed `--output`.
+
+The example dataset in this repository is public, CC0, and de-identified by
+its authors, so running the quickstart against it sends nothing sensitive
+anywhere.
+
 ## Quickstart
 
 Requires [uv](https://docs.astral.sh/uv/) and an OpenAI API key.
@@ -103,6 +147,21 @@ uv run ofc label --input responses.csv \
                  --text-column "What would you change?" \
                  --codebook codebook.yaml
 ```
+
+If a long run is interrupted, `--resume` continues it instead of paying for
+the comments already done:
+
+```bash
+uv run ofc label --input responses.csv \
+                 --text-column "What would you change?" \
+                 --codebook codebook.yaml \
+                 --resume
+```
+
+It skips every comment already in `labelled.csv` or `labelling_failures.csv`,
+and redoes the last one in each — a run that was killed may have written some
+of a comment's rows and not the rest, and one comment is cheaper than one
+comment published with two of its three labels.
 
 `ofc label` reports what you changed — "15 proposed, 6 kept as proposed, 3
 relabelled, 6 deleted" — because a codebook a person approved should be able

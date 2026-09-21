@@ -22,7 +22,10 @@ from .csv_io import (
     OUTPUT_COLUMNS,
     InputError,
     RowWriter,
+    comment_key,
     read_comments,
+    read_partial,
+    rewrite_atomically,
     write_rows,
 )
 from .llm import DEFAULT_MAX_RETRIES, Client, ConfigError, ModelError
@@ -261,6 +264,33 @@ def command_label(args) -> int:
             "about what was changed in it."
         )
 
+    finished: set[tuple] = set()
+    if args.resume:
+        kept_rows, from_output = read_partial(args.output)
+        kept_rejections, from_failures = read_partial(args.failures)
+        finished = from_output | from_failures
+
+        remaining = [
+            comment
+            for comment in comments
+            if (comment.comment_id, str(comment.row_number)) not in finished
+        ]
+        _log(
+            f"Resuming: {_plural(len(finished), 'comment')} already done, "
+            f"{_plural(len(remaining), 'comment')} to go."
+        )
+        if len(finished) and len(remaining) == len(comments):
+            _log("None of them match this input, so nothing was carried over.")
+        if not remaining:
+            _log("Nothing left to label.")
+            return 0
+
+        # The survivors are put back before anything is appended, and put back
+        # atomically: resuming truncates files holding paid-for rows.
+        rewrite_atomically(args.output, OUTPUT_COLUMNS, kept_rows)
+        rewrite_atomically(args.failures, FAILURE_COLUMNS, kept_rejections)
+        comments = remaining
+
     client = Client(model=args.model, max_retries=args.max_retries)
     counter = TokenCounter(client.model)
 
@@ -277,8 +307,8 @@ def command_label(args) -> int:
     # Written as they arrive, so a run that dies partway leaves behind
     # everything it had already paid for and checked.
     with (
-        RowWriter(args.output, OUTPUT_COLUMNS) as labelled,
-        RowWriter(args.failures, FAILURE_COLUMNS) as rejected,
+        RowWriter(args.output, OUTPUT_COLUMNS, append=bool(args.resume)) as labelled,
+        RowWriter(args.failures, FAILURE_COLUMNS, append=bool(args.resume)) as rejected,
     ):
         run = label_step.label_comments(
             comments,
@@ -295,10 +325,12 @@ def command_label(args) -> int:
     _log()
     _log()
     _log(
-        f"Comments: {run.comments_labelled:,} labelled, "
+        f"Comments this run: {run.comments_labelled:,} labelled, "
         f"{run.comments_unassigned:,} unassigned, "
         f"{run.comments_failed:,} excluded after checking."
     )
+    if finished:
+        _log(f"{_plural(len(finished), 'comment')} carried over from the earlier run.")
     if dropped:
         affected = len({entry["comment_id"] for entry in dropped})
         _log(
@@ -469,6 +501,13 @@ def build_parser() -> argparse.ArgumentParser:
         default="labelling_failures.csv",
         metavar="FILE",
         help="Where to write comments excluded by the checks.",
+    )
+    label_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue a run that was interrupted, skipping the comments already "
+        "in --output and --failures. The last comment in each file is redone, "
+        "because a run that was killed may have written only part of its rows.",
     )
     label_parser.add_argument(
         "--concurrency",
