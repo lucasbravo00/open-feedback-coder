@@ -228,3 +228,21 @@ def test_the_evidence_document_holds_the_quotes_and_names_the_codebook():
     assert "never read" in text
     # A theme whose illustrations were all rejected says so rather than looking fine.
     assert "No example survived checking" in text
+
+
+def test_changing_an_id_reads_as_a_deletion_and_an_addition():
+    """The id is the theme's identity; renaming it is not a relabel.
+
+    Worth pinning because the summary line says "deleted" and "added" for what
+    a person experienced as renaming one theme.
+    """
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    book = Codebook(
+        themes=[Theme(id="onboarding", label="Getting started")],
+        source=proposed(("onboarding_ramp_up", "Onboarding")),
+    )
+
+    record = compare_with_proposal(book)
+
+    assert (record.kept, record.relabelled, record.removed, record.added) == (0, 0, 1, 1)

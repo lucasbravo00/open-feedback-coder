@@ -220,9 +220,9 @@ def test_propose_then_label(project, capsys):
     # The run says out loud what the person changed, so the approval is on the
     # record rather than asserted.
     summary = capsys.readouterr().err
-    assert "4 proposed" in summary
-    assert "1 relabelled" in summary
-    assert "1 deleted" in summary
+    # The edit above changed a theme's id as well as its label, and an id is
+    # the theme's identity, so that reads as one deleted and one added.
+    assert "Codebook: 4 proposed, 2 kept as proposed, 2 deleted, 1 added by hand." in summary
 
     rows = read_csv(output_path)
     failures = read_csv(failures_path)
