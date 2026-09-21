@@ -38,3 +38,14 @@ def test_sensible_counts_are_accepted():
 
     assert parsed.max_themes == 8
     assert parsed.max_input_tokens == 120000
+
+
+def test_counts_are_pluralised_properly():
+    """The run summary is the last thing a user reads; it should read well."""
+    from open_feedback_coder.cli import _plural
+
+    assert _plural(0, "comment") == "0 comments"
+    assert _plural(1, "comment") == "1 comment"
+    assert _plural(2, "comment") == "2 comments"
+    assert _plural(1, "repeated theme assignment") == "1 repeated theme assignment"
+    assert _plural(1234, "row") == "1,234 rows"

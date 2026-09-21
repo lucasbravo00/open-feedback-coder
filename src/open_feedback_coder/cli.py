@@ -28,6 +28,11 @@ def _log(message: str = "", end: str = "\n") -> None:
         pass
 
 
+def _plural(count: int, singular: str, plural: str | None = None) -> str:
+    """Return "1 comment" or "4 comments", so the run summary reads properly."""
+    return f"{count:,} {singular if count == 1 else (plural or singular + 's')}"
+
+
 def _positive_int(value: str) -> int:
     """An argparse type for counts that are meaningless at zero or below.
 
@@ -219,13 +224,17 @@ def command_label(args) -> int:
     if dropped:
         affected = len({entry["comment_id"] for entry in dropped})
         _log(
-            f"Dropped {len(dropped):,} repeated theme assignments from "
-            f"{affected:,} comments that were kept."
+            f"Dropped {_plural(len(dropped), 'repeated theme assignment')} from "
+            f"{_plural(affected, 'comment')} that were kept."
         )
-    _log(f"Wrote {args.output} ({len(run.rows):,} rows, one per comment-theme pair).")
     _log(
-        f"Wrote {args.failures} ({len(run.rejections):,} rows: "
-        f"{run.comments_failed:,} excluded comments, {len(dropped):,} dropped assignments)."
+        f"Wrote {args.output} ({_plural(len(run.rows), 'row')}, "
+        "one per comment-theme pair)."
+    )
+    _log(
+        f"Wrote {args.failures} ({_plural(len(run.rejections), 'row')}: "
+        f"{_plural(run.comments_failed, 'excluded comment')}, "
+        f"{_plural(len(dropped), 'dropped assignment')})."
     )
     _log(
         f"Tokens reported by the API: {run.usage.input_tokens:,} in, "
