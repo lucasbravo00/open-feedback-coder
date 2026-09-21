@@ -287,6 +287,16 @@ if st.session_state.get("codebook_fingerprint") != codebook_fingerprint:
 st.download_button(
     "Download codebook.yaml", to_yaml(approved), file_name="codebook.yaml", mime="text/yaml"
 )
+if approved.source.get("proposed"):
+    st.caption(
+        "This file keeps the record of the run that proposed it, so `ofc label` "
+        "can report what you changed in it."
+    )
+else:
+    st.caption(
+        "This file carries no proposal record, so `ofc label` will have nothing "
+        "to compare your edits against."
+    )
 
 st.subheader("4. Label the comments")
 

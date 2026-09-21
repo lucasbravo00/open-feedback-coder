@@ -320,3 +320,50 @@ def test_a_file_that_is_not_a_codebook_is_refused(app):
 
     assert not app.exception, app.exception
     assert any("not a codebook" in error.value for error in app.error)
+
+
+CODEBOOK_WITH_RECORD = b"""
+version: 1
+source:
+  model: some-model
+  proposed:
+    - id: hybrid_work
+      label: Hybrid work
+      description: Where people work from.
+themes:
+  - id: hybrid_work
+    label: Hybrid work
+    description: Where people work from.
+"""
+
+
+def test_a_brought_in_codebook_keeps_its_run_record(app):
+    """It used to be dropped, so a codebook proposed on the command line came
+    back from the app with nothing for `ofc label` to compare against."""
+    app.uploads["codebook"] = CodebookUpload(CODEBOOK_WITH_RECORD)
+
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+
+    assert not app.exception, app.exception
+    captions = [c.value for c in app.caption]
+    assert any("keeps the record of the run that proposed it" in c for c in captions)
+
+
+def test_a_codebook_with_no_record_says_so(app):
+    app.uploads["codebook"] = CodebookUpload(CODEBOOK_YAML)
+
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+
+    captions = [c.value for c in app.caption]
+    assert any("carries no proposal record" in c for c in captions)
+
+
+def test_a_codebook_proposed_in_the_app_carries_a_record(app):
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+    app.button[0].click().run()
+
+    captions = [c.value for c in app.caption]
+    assert any("keeps the record of the run that proposed it" in c for c in captions)
