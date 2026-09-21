@@ -146,6 +146,29 @@ def test_rewriting_leaves_the_old_file_alone_until_the_new_one_is_whole(tmp_path
     assert list(tmp_path.iterdir()) == [path]
 
 
+def test_a_failure_at_the_moment_of_replacement_leaves_the_original(tmp_path, monkeypatch):
+    """Copying over the target would leave it truncated; renaming cannot.
+
+    This is what makes the rewrite atomic rather than merely careful: the new
+    file is complete on disk before anything touches the old one.
+    """
+    import os
+
+    path = tmp_path / "labelled.csv"
+    write(path, OUTPUT_COLUMNS, [labelled_row("1"), labelled_row("2")])
+
+    def refuse(source, destination):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(os, "replace", refuse)
+
+    with pytest.raises(OSError):
+        rewrite_atomically(str(path), OUTPUT_COLUMNS, [labelled_row("1")])
+
+    assert [row["comment_id"] for row in read(path)] == ["1", "2"]
+    assert list(tmp_path.iterdir()) == [path], "no temporary file left behind"
+
+
 def test_rewriting_replaces_the_file(tmp_path):
     path = tmp_path / "labelled.csv"
     write(path, OUTPUT_COLUMNS, [labelled_row("1"), labelled_row("2")])
