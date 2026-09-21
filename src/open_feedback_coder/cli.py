@@ -22,10 +22,7 @@ from .csv_io import (
     OUTPUT_COLUMNS,
     InputError,
     RowWriter,
-    comment_key,
     read_comments,
-    read_partial,
-    rewrite_all,
     rewrite_atomically,
     same_file,
     write_rows,
@@ -266,74 +263,6 @@ def command_label(args) -> int:
             "about what was changed in it."
         )
 
-    finished: set[tuple] = set()
-    restore: list[tuple] = []
-    if args.resume:
-        kept_rows, from_output, unsafe_output = read_partial(args.output)
-        kept_rejections, from_failures, unsafe_failures = read_partial(args.failures)
-
-        # A comment can be last in one file and mid-file in the other. Each
-        # file only knows about its own tail, so the two answers are pooled
-        # before either is trusted: otherwise a comment is deleted from one
-        # file, marked finished by the other, and never comes back.
-        unsafe = unsafe_output | unsafe_failures
-
-        # What counts as evidence that a comment was finished: rows in the
-        # output, or a rejection that excluded it whole. An assignment-scope
-        # row only says a repeat was dropped; that comment's labels live in
-        # the other file, and if they are not there it was not finished. This
-        # is what makes a half-applied restore recoverable rather than a
-        # silent loss.
-        excluded = {
-            comment_key(row) for row in kept_rejections if row.get("scope") == "comment"
-        }
-        finished = (from_output | excluded) - unsafe
-
-        kept_rows = [row for row in kept_rows if comment_key(row) in finished]
-        kept_rejections = [
-            row for row in kept_rejections if comment_key(row) in finished
-        ]
-
-        in_this_input = {
-            (comment.comment_id, str(comment.row_number)) for comment in comments
-        }
-
-        # The unsafe comments are dropped from the files on the promise that
-        # this run redoes them. A run can only redo what its input contains,
-        # so an unsafe comment that is not in the input would be deleted and
-        # never replaced. Refuse rather than choose between losing paid-for
-        # rows and publishing a comment that may be missing a label.
-        unredoable = unsafe - in_this_input
-        if unredoable:
-            names = ", ".join(sorted(key[0] for key in unredoable)[:5])
-            raise InputError(
-                f"{args.output} and {args.failures} were written from a different "
-                f"input: comment {names} is the last one recorded and is not in this "
-                "file, so it cannot be checked or redone. Nothing was changed. "
-                "Point --output and --failures somewhere else, or drop --resume."
-            )
-
-        remaining = [
-            comment
-            for comment in comments
-            if (comment.comment_id, str(comment.row_number)) not in finished
-        ]
-        _log(
-            f"Resuming: {_plural(len(finished), 'comment')} already done, "
-            f"{_plural(len(remaining), 'comment')} to go."
-        )
-        if not remaining:
-            _log("Nothing left to label.")
-            return 0
-
-        # Held until after the confirmation. Rewriting here would destroy
-        # paid-for rows on a run that then stops saying "nothing was sent".
-        restore = [
-            (args.output, OUTPUT_COLUMNS, kept_rows),
-            (args.failures, FAILURE_COLUMNS, kept_rejections),
-        ]
-        comments = remaining
-
     client = Client(model=args.model, max_retries=args.max_retries)
     counter = TokenCounter(client.model)
 
@@ -343,11 +272,6 @@ def command_label(args) -> int:
     check_input_limit(estimate, args.max_input_tokens)
     confirm(estimate, args.yes)
 
-    # Only now, once the run is certainly going ahead, and both files staged
-    # before either is replaced.
-    if restore:
-        rewrite_all(restore)
-
     def progress(done: int, total: int) -> None:
         if done == total or done % 25 == 0:
             _log(f"  labelled {done:,}/{total:,}", end="\r")
@@ -355,8 +279,8 @@ def command_label(args) -> int:
     # Written as they arrive, so a run that dies partway leaves behind
     # everything it had already paid for and checked.
     with (
-        RowWriter(args.output, OUTPUT_COLUMNS, append=bool(args.resume)) as labelled,
-        RowWriter(args.failures, FAILURE_COLUMNS, append=bool(args.resume)) as rejected,
+        RowWriter(args.output, OUTPUT_COLUMNS) as labelled,
+        RowWriter(args.failures, FAILURE_COLUMNS) as rejected,
     ):
         run = label_step.label_comments(
             comments,
@@ -373,12 +297,10 @@ def command_label(args) -> int:
     _log()
     _log()
     _log(
-        f"Comments this run: {run.comments_labelled:,} labelled, "
+        f"Comments: {run.comments_labelled:,} labelled, "
         f"{run.comments_unassigned:,} unassigned, "
         f"{run.comments_failed:,} excluded after checking."
     )
-    if finished:
-        _log(f"{_plural(len(finished), 'comment')} carried over from the earlier run.")
     if dropped:
         affected = len({entry["comment_id"] for entry in dropped})
         _log(
@@ -590,13 +512,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="labelling_failures.csv",
         metavar="FILE",
         help="Where to write comments excluded by the checks.",
-    )
-    label_parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Continue a run that was interrupted, skipping the comments already "
-        "in --output and --failures. The last comment in each file is redone, "
-        "because a run that was killed may have written only part of its rows.",
     )
     label_parser.add_argument(
         "--concurrency",

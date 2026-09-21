@@ -244,3 +244,33 @@ def test_one_path_for_both_outputs_is_refused_before_anything_is_sent(tmp_path, 
     assert exit_code == 1
     assert called == [], "no client should even be built"
     assert not both.exists()
+
+
+def test_one_file_spelled_two_ways_is_still_one_file(tmp_path, monkeypatch):
+    """Plain string equality missed every alias for the same path."""
+    monkeypatch.setattr(cli, "Client", lambda *a, **k: ScriptedClient({}))
+
+    input_path = tmp_path / "survey.csv"
+    input_path.write_text("answer\nsomething\n", encoding="utf-8")
+    codebook_path = tmp_path / "codebook.yaml"
+    codebook_path.write_text("themes:\n  - id: pay\n    label: Pay\n", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+
+    # Built as text: pathlib would normalise the alias away.
+    aliased = f"{tmp_path}/sub/../same.csv"
+    assert aliased != str(tmp_path / "same.csv")
+
+    exit_code = cli.main(
+        [
+            "label",
+            "--input", str(input_path),
+            "--text-column", "answer",
+            "--codebook", str(codebook_path),
+            "--output", str(tmp_path / "same.csv"),
+            "--failures", aliased,
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 1
+    assert not (tmp_path / "same.csv").exists()

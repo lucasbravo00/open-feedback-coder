@@ -4,6 +4,9 @@ The reader is split in two so that a file on disk and a file uploaded to the
 web interface go through exactly the same code. They used to be separate
 implementations, which is how the two paths came to disagree about what
 counts as a placeholder answer.
+
+Output is written as it is produced rather than at the end, so a run that is
+interrupted keeps everything it had already paid for and checked.
 """
 
 from __future__ import annotations
@@ -197,25 +200,21 @@ class RowWriter:
     disk, and the partial file is a valid CSV.
     """
 
-    def __init__(self, path: str | None, columns: list[str], append: bool = False):
+    def __init__(self, path: str | None, columns: list[str]):
         self.path = path
         self.columns = columns
-        self.append = append
         self._handle = None
         self._writer = None
 
     def __enter__(self) -> "RowWriter":
         if self.path is None:
             return self
-        self._handle = open(
-            self.path, "a" if self.append else "w", newline="", encoding="utf-8"
-        )
+        self._handle = open(self.path, "w", newline="", encoding="utf-8")
         self._writer = csv.DictWriter(
             self._handle, fieldnames=self.columns, extrasaction="ignore"
         )
-        if not self.append:
-            self._writer.writeheader()
-            self._handle.flush()
+        self._writer.writeheader()
+        self._handle.flush()
         return self
 
     def write(self, rows) -> None:
@@ -229,54 +228,6 @@ class RowWriter:
             self._handle.close()
             self._handle = None
             self._writer = None
-
-
-def read_partial(path: str) -> tuple[list[dict], set[tuple], set[tuple]]:
-    """Read a partial output file and sort its comments into safe and not.
-
-    A run killed mid-write may have flushed only some of a comment's rows, and
-    a comment published with two of its three labels is exactly what the
-    all-or-nothing rule exists to prevent. So the last comment in the file is
-    always treated as unsafe: redoing one comment costs one call, trusting a
-    truncated one costs the guarantee.
-
-    Trailing rows that are short are discarded first. A line cut off partway
-    parses with None in the columns it never reached, and if the cut landed
-    inside comment_id or row_number the fragment carries a key belonging to no
-    comment at all - which would leave the genuinely last comment looking
-    complete.
-
-    Returns the rows worth keeping, the keys they cover, and the keys that
-    must be redone. A caller reading two files has to pool the unsafe keys
-    from both before trusting either: a comment can be last in one file and
-    mid-file in the other.
-    """
-    if not os.path.exists(path):
-        return [], set(), set()
-
-    with open(path, newline="", encoding=DEFAULT_ENCODING) as handle:
-        rows = list(csv.DictReader(handle))
-
-    # A short row means the write was cut off inside it. Only trailing ones
-    # can be torn; a short row in the middle would be a different problem.
-    while rows and any(value is None for value in rows[-1].values()):
-        rows.pop()
-
-    if not rows:
-        return [], set(), set()
-
-    unsafe = {comment_key(rows[-1])}
-    kept = [row for row in rows if comment_key(row) not in unsafe]
-    return kept, {comment_key(row) for row in kept}, unsafe
-
-
-def comment_key(row) -> tuple:
-    """What identifies a comment across the input and the output files.
-
-    The row number is part of it because an id column supplied by the user is
-    not guaranteed to be unique, while a row number always is.
-    """
-    return (str(row.get("comment_id", "")), str(row.get("row_number", "")))
 
 
 def same_file(first: str | None, second: str | None) -> bool:
@@ -317,32 +268,20 @@ def _stage(path: str, columns: list[str], rows: list[dict]) -> str:
     return handle.name
 
 
-def rewrite_all(replacements) -> None:
-    """Replace several files, staging every one before replacing any.
-
-    Two files cannot be swapped in one atomic step, but everything expensive
-    can happen before the first one is touched. Staging them all first leaves
-    only the renames themselves between a consistent before and a consistent
-    after, instead of a whole file write.
-
-    `replacements` is a sequence of (path, columns, rows).
-    """
-    staged: list[tuple[str, str]] = []
-    try:
-        for path, columns, rows in replacements:
-            staged.append((_stage(path, columns, rows), path))
-        for temporary, path in staged:
-            os.replace(temporary, path)
-    except BaseException:
-        for temporary, _ in staged:
-            if os.path.exists(temporary):
-                os.unlink(temporary)
-        raise
-
-
 def rewrite_atomically(path: str, columns: list[str], rows: list[dict]) -> None:
-    """Replace one file with `rows`, leaving the old one intact until whole."""
-    rewrite_all([(path, columns, rows)])
+    """Replace a file with `rows`, leaving the old one intact until it is whole.
+
+    The review sheet holds marks somebody typed into it. Writing the
+    replacement to a temporary file and renaming it means an interruption
+    cannot leave a half-written sheet where their work used to be.
+    """
+    temporary = _stage(path, columns, rows)
+    try:
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def write_rows(path: str | None, columns: list[str], rows: list[dict]) -> None:
