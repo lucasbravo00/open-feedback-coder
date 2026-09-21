@@ -37,8 +37,37 @@ def test_round_trip_through_a_file(tmp_path):
     loaded = load(str(path))
 
     assert [theme.id for theme in loaded.themes] == ["onboarding", "pay"]
-    assert loaded.themes[0].examples[0].quote == "nobody owned it"
     assert loaded.source["comments_analysed"] == 412
+
+
+def test_the_editable_file_carries_no_quotes(tmp_path):
+    """They live in the evidence document; here they are only in the way."""
+    path = tmp_path / "codebook.yaml"
+
+    save(sample(), str(path))
+    text = path.read_text(encoding="utf-8")
+
+    assert "nobody owned it" not in text
+    assert "examples" not in text
+    assert load(str(path)).themes[0].examples == []
+
+
+def test_a_codebook_that_still_has_examples_is_accepted(tmp_path):
+    """Older files, and hand-written ones, must keep working."""
+    path = tmp_path / "codebook.yaml"
+    path.write_text(
+        "themes:\n"
+        "  - id: pay\n"
+        "    label: Pay\n"
+        "    examples:\n"
+        "      - comment_id: '7'\n"
+        "        quote: the pay is fine\n",
+        encoding="utf-8",
+    )
+
+    loaded = load(str(path))
+
+    assert loaded.themes[0].examples[0].quote == "the pay is fine"
 
 
 def test_the_written_file_explains_that_it_is_meant_to_be_edited(tmp_path):
@@ -113,3 +142,89 @@ def test_get_returns_none_for_a_theme_that_was_deleted():
 
     assert book.get("pay") is not None
     assert book.get("onboarding") is None
+
+
+# The project claims a person approved the codebook. These make that claim
+# checkable against the file rather than something to take on trust.
+
+
+def proposed(*pairs):
+    return {"proposed": [{"id": i, "label": l} for i, l in pairs]}
+
+
+def test_an_untouched_codebook_says_so():
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    book = Codebook(
+        themes=[Theme(id="pay", label="Pay"), Theme(id="onboarding", label="Onboarding")],
+        source=proposed(("pay", "Pay"), ("onboarding", "Onboarding")),
+    )
+
+    record = compare_with_proposal(book)
+
+    assert record.untouched
+    assert record.kept == 2
+    assert "unedited" in record.describe()
+
+
+def test_deleting_renaming_and_adding_are_each_counted():
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    book = Codebook(
+        themes=[
+            Theme(id="pay", label="Pay"),                    # kept
+            Theme(id="onboarding", label="Getting started"),  # relabelled
+            Theme(id="hybrid", label="Hybrid work"),          # added by hand
+        ],
+        source=proposed(
+            ("pay", "Pay"), ("onboarding", "Onboarding"), ("workload", "Workload")
+        ),
+    )
+
+    record = compare_with_proposal(book)
+
+    assert (record.proposed, record.kept, record.relabelled, record.removed, record.added) == (
+        3, 1, 1, 1, 1,
+    )
+    described = record.describe()
+    assert "3 proposed" in described
+    assert "1 relabelled" in described
+    assert "1 deleted" in described
+    assert "1 added by hand" in described
+    assert not record.untouched
+
+
+def test_a_codebook_with_no_record_compares_to_nothing():
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    assert compare_with_proposal(Codebook(themes=[Theme(id="pay", label="Pay")])) is None
+    assert compare_with_proposal(
+        Codebook(themes=[Theme(id="pay", label="Pay")], source={"proposed": []})
+    ) is None
+
+
+def test_the_record_survives_the_round_trip(tmp_path):
+    from open_feedback_coder.codebook import (
+        Codebook, Theme, compare_with_proposal, load, proposal_record, save,
+    )
+
+    original = Codebook(themes=[Theme(id="pay", label="Pay")])
+    book = Codebook(themes=original.themes, source={"proposed": proposal_record(original)})
+    path = tmp_path / "codebook.yaml"
+
+    save(book, str(path))
+
+    assert compare_with_proposal(load(str(path))).untouched
+
+
+def test_the_evidence_document_holds_the_quotes_and_names_the_codebook():
+    from open_feedback_coder.codebook import to_evidence
+
+    text = to_evidence(sample(), codebook_path="my_codebook.yaml")
+
+    assert "nobody owned it" in text
+    assert "comment 7" in text
+    assert "my_codebook.yaml" in text
+    assert "never read" in text
+    # A theme whose illustrations were all rejected says so rather than looking fine.
+    assert "No example survived checking" in text

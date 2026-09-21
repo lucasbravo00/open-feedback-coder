@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from . import __version__, codebook as codebook_module, label as label_step, propose as propose_step
 from .budget import BudgetExceeded, Cancelled, TokenCounter, check_input_limit, confirm
-from .codebook import Codebook, CodebookError
+from .codebook import Codebook, CodebookError, compare_with_proposal, proposal_record
 from .csv_io import FAILURE_COLUMNS, OUTPUT_COLUMNS, InputError, read_comments, write_rows
 from .llm import Client, ConfigError, ModelError
 from .phrasing import plural as _plural
 
 DEFAULT_MAX_THEMES = 15
+
+
+def _evidence_path(codebook_path: str, explicit: str | None) -> str:
+    """Where the quotes behind a proposed codebook go, beside the codebook."""
+    if explicit:
+        return explicit
+    stem, _ = os.path.splitext(codebook_path)
+    return f"{stem}.evidence.md"
 
 
 def _log(message: str = "", end: str = "\n") -> None:
@@ -161,13 +170,20 @@ def command_propose(args) -> int:
             "rows_skipped": skipped.total,
             "model": client.model,
             "max_themes": args.max_themes,
+            # What the model proposed, so that `ofc label` can report what you
+            # changed. It is the evidence behind "a person approved this".
+            "proposed": proposal_record(result.codebook),
         },
     )
+
+    evidence_path = _evidence_path(args.output, args.evidence)
     codebook_module.save(result.codebook, args.output)
+    codebook_module.save_evidence(result.codebook, evidence_path, args.output)
 
     _log()
-    _log(f"Wrote {args.output}.")
-    _log("Open it, edit the themes, and delete what you do not want. Then run:")
+    _log(f"Wrote {args.output} ({len(result.codebook.themes)} themes to edit).")
+    _log(f"Wrote {evidence_path} (the quotes behind them, to read while you edit).")
+    _log("Edit the codebook, delete what you do not want, then run:")
     _log(
         f"  ofc label --input {args.input} --text-column {args.text_column} "
         f"--codebook {args.output}"
@@ -187,6 +203,15 @@ def command_label(args) -> int:
     )
     _report_input(comments, skipped, args)
     _log(f"Using {len(book.themes)} approved themes from {args.codebook}.")
+
+    approval = compare_with_proposal(book)
+    if approval is not None:
+        _log(approval.describe())
+    else:
+        _log(
+            "No record of a proposal in this codebook, so there is nothing to say "
+            "about what was changed in it."
+        )
 
     client = Client(model=args.model)
     counter = TokenCounter(client.model)
@@ -270,6 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     propose_parser.add_argument(
         "--output", default="codebook.yaml", metavar="FILE", help="Where to write the codebook."
+    )
+    propose_parser.add_argument(
+        "--evidence",
+        metavar="FILE",
+        help="Where to write the quotes behind each theme. Defaults to the "
+        "codebook's name with .evidence.md.",
     )
     propose_parser.set_defaults(handler=command_propose)
 

@@ -29,9 +29,13 @@ _HEADER_COMMENT = """\
 #   - `id` must be lowercase letters, digits and underscores, and unique.
 #   - `label` must not be empty.
 #   - at least one theme must remain.
-# `examples` are quotes taken verbatim from the corpus and verified against it.
-# They are here to help you judge each theme; editing or deleting them changes
-# nothing about how labelling works.
+#
+# The quotes that illustrate each theme are in the companion evidence file
+# written beside this one. They are there to be read while you edit; keeping
+# them out of here is what makes this file short enough to edit comfortably.
+#
+# `source.proposed` records what the model proposed, so that `ofc label` can
+# report what you changed. Deleting it loses that record and nothing else.
 """
 
 
@@ -75,7 +79,12 @@ class Codebook:
 
 
 def to_yaml(codebook: Codebook) -> str:
-    """Render a codebook as the YAML text written to disk."""
+    """Render a codebook as the YAML text written to disk.
+
+    Example quotes are deliberately left out. They belong in the evidence
+    document, where they can be read without standing between the reader and
+    the three fields they came to edit.
+    """
     document = {
         "version": CODEBOOK_VERSION,
         "source": codebook.source,
@@ -84,16 +93,58 @@ def to_yaml(codebook: Codebook) -> str:
                 "id": theme.id,
                 "label": theme.label,
                 "description": theme.description,
-                "examples": [
-                    {"comment_id": example.comment_id, "quote": example.quote}
-                    for example in theme.examples
-                ],
             }
             for theme in codebook.themes
         ],
     }
     body = yaml.safe_dump(document, sort_keys=False, allow_unicode=True, width=88)
     return _HEADER_COMMENT + "\n" + body
+
+
+def to_evidence(codebook: Codebook, codebook_path: str = "codebook.yaml") -> str:
+    """Render the quotes behind each proposed theme, for reading not editing.
+
+    Every quote here was located in the comment it is attributed to, by the
+    same verifier that checks labels. A theme with no quotes had its
+    illustrations rejected, which is itself worth seeing while deciding
+    whether to keep it.
+    """
+    lines = [
+        "# Evidence for the proposed codebook",
+        "",
+        f"Quotes taken verbatim from the corpus and checked against it, one section",
+        f"per theme in `{codebook_path}`. This file is generated and is never read",
+        "back: edit the codebook, not this.",
+        "",
+    ]
+
+    for theme in codebook.themes:
+        lines.append(f"## {theme.label}")
+        lines.append("")
+        lines.append(f"`{theme.id}`")
+        lines.append("")
+        if theme.description:
+            lines.append(theme.description)
+            lines.append("")
+        if theme.examples:
+            for example in theme.examples:
+                lines.append(f"> {example.quote}")
+                lines.append("")
+                lines.append(f"— comment {example.comment_id}")
+                lines.append("")
+        else:
+            lines.append(
+                "_No example survived checking: every quote the model offered for "
+                "this theme was not found in the comment it was attributed to._"
+            )
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+def save_evidence(codebook: Codebook, path: str, codebook_path: str = "codebook.yaml") -> None:
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write(to_evidence(codebook, codebook_path))
 
 
 def save(codebook: Codebook, path: str) -> None:
@@ -168,6 +219,82 @@ def from_dict(document: object, origin: str = "codebook") -> Codebook:
 
     source = document.get("source")
     return Codebook(themes=themes, source=source if isinstance(source, dict) else {})
+
+
+@dataclass(frozen=True)
+class ApprovalRecord:
+    """What a person did to the codebook between proposal and labelling."""
+
+    proposed: int
+    kept: int
+    relabelled: int
+    removed: int
+    added: int
+
+    @property
+    def untouched(self) -> bool:
+        return self.relabelled == 0 and self.removed == 0 and self.added == 0
+
+    def describe(self) -> str:
+        if self.untouched:
+            return (
+                f"Codebook: all {self.proposed} proposed themes used as proposed, "
+                "unedited."
+            )
+        parts = [f"{self.kept} kept as proposed"]
+        if self.relabelled:
+            parts.append(f"{self.relabelled} relabelled")
+        if self.removed:
+            parts.append(f"{self.removed} deleted")
+        if self.added:
+            parts.append(f"{self.added} added by hand")
+        return f"Codebook: {self.proposed} proposed, " + ", ".join(parts) + "."
+
+
+def compare_with_proposal(codebook: Codebook) -> ApprovalRecord | None:
+    """Return what changed since the proposal, or None if there is no record.
+
+    The record lives in the codebook's own `source.proposed` block, so the
+    claim that a person approved these themes can be checked against the file
+    rather than taken on trust. A codebook written by hand, or one whose
+    record was deleted, simply has nothing to compare against.
+    """
+    proposed = codebook.source.get("proposed")
+    if not isinstance(proposed, list) or not proposed:
+        return None
+
+    proposed_labels = {}
+    for entry in proposed:
+        if isinstance(entry, dict) and entry.get("id"):
+            proposed_labels[str(entry["id"])] = str(entry.get("label", ""))
+
+    if not proposed_labels:
+        return None
+
+    kept = relabelled = added = 0
+    for theme in codebook.themes:
+        if theme.id not in proposed_labels:
+            added += 1
+        elif proposed_labels[theme.id] == theme.label:
+            kept += 1
+        else:
+            relabelled += 1
+
+    approved_ids = codebook.theme_ids()
+    removed = sum(1 for theme_id in proposed_labels if theme_id not in approved_ids)
+
+    return ApprovalRecord(
+        proposed=len(proposed_labels),
+        kept=kept,
+        relabelled=relabelled,
+        removed=removed,
+        added=added,
+    )
+
+
+def proposal_record(codebook: Codebook) -> list[dict]:
+    """The `source.proposed` value for a freshly proposed codebook."""
+    return [{"id": theme.id, "label": theme.label} for theme in codebook.themes]
 
 
 def load(path: str) -> Codebook:

@@ -159,7 +159,7 @@ def read_csv(path):
         return list(csv.DictReader(handle))
 
 
-def test_propose_then_label(project):
+def test_propose_then_label(project, capsys):
     tmp_path, input_path = project
     codebook_path = tmp_path / "codebook.yaml"
     output_path = tmp_path / "labelled.csv"
@@ -180,13 +180,18 @@ def test_propose_then_label(project):
     document = yaml.safe_load(codebook_path.read_text(encoding="utf-8"))
     ids = [theme["id"] for theme in document["themes"]]
     assert ids == ["onboarding_ramp_up", "pay", "workload", "gratitude"]
-
-    # The invented example was dropped; the verified ones were kept.
-    by_id = {theme["id"]: theme for theme in document["themes"]}
-    assert by_id["gratitude"]["examples"] == []
-    assert len(by_id["onboarding_ramp_up"]["examples"]) == 2
     assert document["source"]["comments_analysed"] == 5
     assert document["source"]["rows_skipped"] == 2
+
+    # The file you edit is short: three fields per theme and no quotes.
+    assert all(set(theme) == {"id", "label", "description"} for theme in document["themes"])
+
+    # The quotes are in the companion document, and only the verified ones.
+    evidence = (tmp_path / "codebook.evidence.md").read_text(encoding="utf-8")
+    assert "nobody owned it" in evidence
+    assert "Onboarding was fine actually" in evidence
+    assert "thanks a lot for the survey" not in evidence, "invented quote must not appear"
+    assert "No example survived checking" in evidence, "the gratitude theme had none"
 
     # Stand in for the person editing the file: rename the repaired id to the
     # one the labeller will use, and delete a theme.
@@ -194,6 +199,7 @@ def test_propose_then_label(project):
     for theme in document["themes"]:
         if theme["id"] == "onboarding_ramp_up":
             theme["id"] = "onboarding"
+            theme["label"] = "Getting started"
     codebook_path.write_text(yaml.safe_dump(document, allow_unicode=True), encoding="utf-8")
 
     exit_code = cli.main(
@@ -210,6 +216,13 @@ def test_propose_then_label(project):
         ]
     )
     assert exit_code == 0
+
+    # The run says out loud what the person changed, so the approval is on the
+    # record rather than asserted.
+    summary = capsys.readouterr().err
+    assert "4 proposed" in summary
+    assert "1 relabelled" in summary
+    assert "1 deleted" in summary
 
     rows = read_csv(output_path)
     failures = read_csv(failures_path)
