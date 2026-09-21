@@ -205,7 +205,9 @@ def command_label(args) -> int:
     )
 
     write_rows(args.output, OUTPUT_COLUMNS, run.rows)
-    write_rows(args.failures, FAILURE_COLUMNS, run.failures)
+    write_rows(args.failures, FAILURE_COLUMNS, run.rejections)
+
+    dropped = run.dropped_assignments
 
     _log()
     _log()
@@ -214,8 +216,17 @@ def command_label(args) -> int:
         f"{run.comments_unassigned:,} unassigned, "
         f"{run.comments_failed:,} excluded after checking."
     )
+    if dropped:
+        affected = len({entry["comment_id"] for entry in dropped})
+        _log(
+            f"Dropped {len(dropped):,} repeated theme assignments from "
+            f"{affected:,} comments that were kept."
+        )
     _log(f"Wrote {args.output} ({len(run.rows):,} rows, one per comment-theme pair).")
-    _log(f"Wrote {args.failures} ({len(run.failures):,} rows).")
+    _log(
+        f"Wrote {args.failures} ({len(run.rejections):,} rows: "
+        f"{run.comments_failed:,} excluded comments, {len(dropped):,} dropped assignments)."
+    )
     _log(
         f"Tokens reported by the API: {run.usage.input_tokens:,} in, "
         f"{run.usage.output_tokens:,} out."

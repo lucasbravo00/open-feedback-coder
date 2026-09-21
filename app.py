@@ -277,12 +277,26 @@ st.download_button(
     mime="text/csv",
 )
 
-if run.failures:
-    st.warning(f"{len(run.failures):,} comments were excluded because a check failed.")
-    st.dataframe(pd.DataFrame(run.failures), width="stretch", hide_index=True)
+if run.rejections:
+    dropped = run.dropped_assignments
+    notes = []
+    if run.comments_failed:
+        notes.append(f"{run.comments_failed:,} comments were excluded because a check failed")
+    if dropped:
+        notes.append(
+            f"{len(dropped):,} repeated theme assignments were dropped from comments "
+            "that were kept"
+        )
+    st.warning(". ".join(note[0].upper() + note[1:] for note in notes) + ".")
+    st.caption(
+        "The `scope` column says which happened: `comment` for a comment kept out "
+        "of the results, `assignment` for one label removed from a comment that is "
+        "still in them."
+    )
+    st.dataframe(pd.DataFrame(run.rejections), width="stretch", hide_index=True)
     st.download_button(
         "Download labelling_failures.csv",
-        rows_to_csv(FAILURE_COLUMNS, run.failures),
+        rows_to_csv(FAILURE_COLUMNS, run.rejections),
         file_name="labelling_failures.csv",
         mime="text/csv",
     )

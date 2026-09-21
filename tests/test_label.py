@@ -174,13 +174,6 @@ def test_primary_row_comes_first(book, make_comment):
             "too_many_secondary_themes",
         ),
         (
-            [
-                assignment("onboarding", "primary", "negative", "nobody owned it"),
-                assignment("onboarding", "secondary", "negative", "three weeks longer"),
-            ],
-            "duplicate_theme",
-        ),
-        (
             [assignment("onboarding", "primary", "mixed", "nobody owned it")],
             "invalid_valence",
         ),
@@ -205,3 +198,92 @@ def test_failure_rows_keep_the_full_comment_text(book, make_comment):
     assert outcome.failure["comment_text"] == canonicalise(COMMENT_TEXT)
     assert outcome.failure["comment_id"] == "R42"
     assert outcome.failure["row_number"] == 42
+
+
+
+# A theme assigned twice used to take the whole comment out of the output,
+# losing a correct primary theme and its verified quote over a redundant
+# secondary. Seen on the first real labelling run, against real survey text.
+
+
+def test_a_repeated_theme_drops_the_repeat_and_keeps_the_comment(book, make_comment):
+    comment = make_comment(COMMENT_TEXT)
+
+    outcome = assemble_comment_rows(
+        comment,
+        response(
+            assignment("onboarding", "primary", "negative", "nobody owned it"),
+            assignment("onboarding", "secondary", "negative", "three weeks longer"),
+            assignment("pay", "secondary", "positive", "pay is genuinely competitive"),
+        ),
+        book,
+    )
+
+    assert not outcome.failed
+    assert [(row["assignment"], row["theme_id"]) for row in outcome.rows] == [
+        ("primary", "onboarding"),
+        ("secondary", "pay"),
+    ]
+    assert len(outcome.dropped) == 1
+    assert outcome.dropped[0]["scope"] == "assignment"
+    assert outcome.dropped[0]["failure_reason"] == "duplicate_theme"
+    assert outcome.dropped[0]["rejected_theme_id"] == "onboarding"
+    assert outcome.dropped[0]["rejected_quote"] == "three weeks longer"
+
+
+def test_the_primary_is_the_assignment_that_survives_a_repeat(book, make_comment):
+    """Primaries are checked first, so the repeat is always the secondary."""
+    comment = make_comment(COMMENT_TEXT)
+
+    outcome = assemble_comment_rows(
+        comment,
+        response(
+            assignment("onboarding", "secondary", "positive", "three weeks longer"),
+            assignment("onboarding", "primary", "negative", "nobody owned it"),
+        ),
+        book,
+    )
+
+    assert [row["assignment"] for row in outcome.rows] == ["primary"]
+    assert outcome.rows[0]["quote"] == "nobody owned it"
+    assert outcome.rows[0]["valence"] == "negative"
+    assert outcome.dropped[0]["rejected_quote"] == "three weeks longer"
+
+
+def test_a_repeat_whose_quote_is_invented_still_excludes_the_comment(book, make_comment):
+    """Dropping repeats does not soften the rule that matters."""
+    comment = make_comment(COMMENT_TEXT)
+
+    outcome = assemble_comment_rows(
+        comment,
+        response(
+            assignment("onboarding", "primary", "negative", "nobody owned it"),
+            assignment("onboarding", "secondary", "negative", "nobody was in charge"),
+        ),
+        book,
+    )
+
+    assert outcome.rows == []
+    assert outcome.failure["failure_reason"] == "quote_not_found_in_comment"
+    assert outcome.failure["scope"] == "comment"
+
+
+def test_every_rejection_says_what_it_rejected(book, make_comment):
+    comment = make_comment(COMMENT_TEXT)
+
+    kept = assemble_comment_rows(
+        comment,
+        response(
+            assignment("onboarding", "primary", "negative", "nobody owned it"),
+            assignment("onboarding", "secondary", "negative", "three weeks longer"),
+        ),
+        book,
+    )
+    excluded = assemble_comment_rows(
+        comment,
+        response(assignment("pay", "primary", "positive", "the salary is competitive")),
+        book,
+    )
+
+    assert kept.dropped[0]["scope"] == "assignment"
+    assert excluded.failure["scope"] == "comment"

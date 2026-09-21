@@ -37,7 +37,12 @@ OUTPUT_COLUMNS = [
     "quote_end",
 ]
 
+# `scope` says what was rejected: an entire comment, kept out of the output,
+# or a single assignment dropped from a comment that is still in it. One file
+# holds both so that everything the checks refused is in one place, and the
+# two are told apart by a column rather than by counting.
 FAILURE_COLUMNS = [
+    "scope",
     "comment_id",
     "row_number",
     "comment_text",

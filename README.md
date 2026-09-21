@@ -146,15 +146,20 @@ A comment that fits no theme in your codebook gets a single row with
 The model is told not to stretch a theme to fit, so the count of unassigned
 comments is information about your codebook, not noise to be cleared.
 
-`labelling_failures.csv` holds the comments that were excluded, with
-`failure_reason` one of: `quote_not_found_in_comment`, `unknown_theme_id`,
-`duplicate_theme`, `invalid_valence`, `no_primary_theme`,
-`multiple_primary_themes`, `too_many_secondary_themes`, `malformed_response`,
-`model_error`.
+`labelling_failures.csv` holds everything the checks refused. Its `scope`
+column says what was refused:
 
-A comment can fail only in one of these ways and can never appear in both
-files: a failure ends the checks for that comment, and the two files are
-written from lists that are disjoint by construction.
+- **`comment`** — the whole comment was kept out of the results.
+  `failure_reason` is one of `quote_not_found_in_comment`, `unknown_theme_id`,
+  `invalid_valence`, `no_primary_theme`, `multiple_primary_themes`,
+  `too_many_secondary_themes`, `malformed_response`, `model_error`.
+- **`assignment`** — one label was removed and the comment stayed. The only
+  reason is `duplicate_theme`, where the model assigned a comment the same
+  theme twice.
+
+A comment rejected at `comment` scope appears in this file and nowhere else. A
+comment with an `assignment`-scope row appears in both files, which is the
+point: you can see what was taken off it and why.
 
 ## How a quote is checked
 
@@ -188,8 +193,17 @@ rather than being whatever the model typed. That is what makes
 
 Checking is all or nothing per comment. If one of a comment's three quotes
 cannot be located, the whole comment is excluded rather than published with
-its two surviving labels: in a spreadsheet, a partly verified row looks
-exactly like a fully verified one.
+its two surviving labels: a model that invented one quote has not earned trust
+on the others, and in a spreadsheet a partly verified row looks exactly like a
+fully verified one.
+
+One case is treated differently. A theme assigned twice to the same comment is
+a formatting slip rather than an invention — the repeat names nothing the
+comment does not already carry, so there is no judgement to make about which
+of the two to keep. The repeat is dropped, the comment stays, and the drop is
+recorded at `assignment` scope. Its quote is verified before that decision is
+taken, so a fabricated quote is never waved through merely because the theme
+it came attached to had already been used.
 
 ## Where the model is used, and where it is not
 

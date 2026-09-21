@@ -6,10 +6,19 @@ for character, inside the comment it came from. Checking happens here, in
 code, on every label, and a comment that fails any check is written to the
 failures file instead of the output file.
 
-Checking is all or nothing per comment. If one of a comment's three quotes
-cannot be located, the whole comment is excluded rather than published with
-its surviving labels: a partially verified row looks exactly like a verified
-one once it is in a spreadsheet.
+Checking is all or nothing per comment where the model's honesty is in
+question. If one of a comment's three quotes cannot be located, the whole
+comment is excluded rather than published with its surviving labels: a model
+that invented one quote has not earned trust on the others, and a partially
+verified row looks exactly like a verified one once it is in a spreadsheet.
+
+One case is treated differently. A theme assigned twice to the same comment is
+a formatting slip, not an invention: the repeat names nothing the comment does
+not already carry, so there is no judgement to make about which to keep. The
+repeat is dropped, the comment stays, and the drop is written to the
+rejections file under scope "assignment" so it is still on the record. The
+repeat's quote is verified before that decision is taken, so a fabricated
+quote is never waved through merely because its theme had already been used.
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ class CommentOutcome:
 
     rows: list[dict] = field(default_factory=list)
     failure: dict | None = None
+    dropped: list[dict] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
 
     @property
@@ -52,10 +62,20 @@ class LabelRun:
     """Everything produced by labelling a corpus."""
 
     rows: list[dict] = field(default_factory=list)
-    failures: list[dict] = field(default_factory=list)
+    rejections: list[dict] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
     comments_labelled: int = 0
     comments_unassigned: int = 0
+
+    @property
+    def failures(self) -> list[dict]:
+        """Rejections that excluded a whole comment from the output."""
+        return [entry for entry in self.rejections if entry["scope"] == "comment"]
+
+    @property
+    def dropped_assignments(self) -> list[dict]:
+        """Rejections that removed one label from a comment that was kept."""
+        return [entry for entry in self.rejections if entry["scope"] == "assignment"]
 
     @property
     def comments_failed(self) -> int:
@@ -95,8 +115,11 @@ def build_estimate(
     )
 
 
-def _failure(comment, reason: str, detail: str = "", theme_id: str = "", quote: str = "") -> dict:
+def _rejection(
+    comment, scope: str, reason: str, detail: str = "", theme_id: str = "", quote: str = ""
+) -> dict:
     return {
+        "scope": scope,
         "comment_id": comment.comment_id,
         "row_number": comment.row_number,
         "comment_text": comment.text,
@@ -105,6 +128,16 @@ def _failure(comment, reason: str, detail: str = "", theme_id: str = "", quote: 
         "rejected_theme_id": theme_id,
         "rejected_quote": quote,
     }
+
+
+def _failure(comment, reason: str, detail: str = "", theme_id: str = "", quote: str = "") -> dict:
+    """A rejection that keeps the whole comment out of the output."""
+    return _rejection(comment, "comment", reason, detail, theme_id, quote)
+
+
+def _dropped(comment, reason: str, detail: str = "", theme_id: str = "", quote: str = "") -> dict:
+    """A rejection that removes one label from a comment that is kept."""
+    return _rejection(comment, "assignment", reason, detail, theme_id, quote)
 
 
 def _unassigned_row(comment) -> dict:
@@ -174,6 +207,7 @@ def assemble_comment_rows(comment, response: dict, codebook: Codebook) -> Commen
 
     ordered = primaries + secondaries
     rows: list[dict] = []
+    dropped: list[dict] = []
     seen_themes: set[str] = set()
 
     for assignment in ordered:
@@ -189,16 +223,6 @@ def assemble_comment_rows(comment, response: dict, codebook: Codebook) -> Commen
                     comment,
                     "unknown_theme_id",
                     f"{theme_id!r} is not in the approved codebook",
-                    theme_id=theme_id,
-                    quote=quote,
-                )
-            )
-        if theme_id in seen_themes:
-            return CommentOutcome(
-                failure=_failure(
-                    comment,
-                    "duplicate_theme",
-                    f"{theme_id!r} was assigned twice to the same comment",
                     theme_id=theme_id,
                     quote=quote,
                 )
@@ -226,6 +250,23 @@ def assemble_comment_rows(comment, response: dict, codebook: Codebook) -> Commen
                 )
             )
 
+        # Checked last, and only once the quote has been verified. A repeat is
+        # dropped rather than fatal, so checking it first would let a
+        # fabricated quote through unexamined purely because the theme it was
+        # attached to had already been used.
+        if theme_id in seen_themes:
+            dropped.append(
+                _dropped(
+                    comment,
+                    "duplicate_theme",
+                    f"{theme_id!r} was assigned twice to the same comment; "
+                    "the repeat was dropped and the comment kept",
+                    theme_id=theme_id,
+                    quote=match.text,
+                )
+            )
+            continue
+
         seen_themes.add(theme_id)
         rows.append(
             {
@@ -242,7 +283,16 @@ def assemble_comment_rows(comment, response: dict, codebook: Codebook) -> Commen
             }
         )
 
-    return CommentOutcome(rows=rows)
+    if not rows:
+        # Every assignment was a repeat of one already dropped, which should be
+        # unreachable: the first of any theme is always kept.
+        return CommentOutcome(
+            failure=_failure(
+                comment, "malformed_response", "no assignment survived the checks"
+            )
+        )
+
+    return CommentOutcome(rows=rows, dropped=dropped)
 
 
 def label_comments(
@@ -299,8 +349,9 @@ def label_comments(
         for index, outcome in enumerate(pool.map(label_one, comments), start=1):
             run.usage = run.usage + outcome.usage
             if outcome.failed:
-                run.failures.append(outcome.failure)
+                run.rejections.append(outcome.failure)
             else:
+                run.rejections.extend(outcome.dropped)
                 run.rows.extend(outcome.rows)
                 if outcome.rows and outcome.rows[0]["assignment"] == "unassigned":
                     run.comments_unassigned += 1
