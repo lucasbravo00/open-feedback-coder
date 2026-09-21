@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import os
 import sys
 
-from . import __version__, codebook as codebook_module, label as label_step, propose as propose_step
+from . import (
+    __version__,
+    codebook as codebook_module,
+    counting,
+    label as label_step,
+    propose as propose_step,
+    reviewing,
+)
 from .budget import BudgetExceeded, Cancelled, TokenCounter, check_input_limit, confirm
 from .codebook import Codebook, CodebookError, compare_with_proposal, proposal_record
 from .csv_io import (
@@ -15,6 +23,7 @@ from .csv_io import (
     InputError,
     RowWriter,
     read_comments,
+    write_rows,
 )
 from .llm import DEFAULT_MAX_RETRIES, Client, ConfigError, ModelError
 from .phrasing import plural as _plural
@@ -311,6 +320,70 @@ def command_label(args) -> int:
     return 0
 
 
+def _read_labelled(path: str) -> list[dict]:
+    """Read a file this tool wrote earlier, checking it is one."""
+    try:
+        with open(path, newline="", encoding="utf-8") as handle:
+            rows = list(csv.DictReader(handle))
+    except FileNotFoundError as error:
+        raise InputError(f"Labelled file not found: {path}") from error
+
+    if not rows:
+        raise InputError(f"{path} has no rows.")
+
+    missing = [column for column in ("comment_id", "assignment", "quote") if column not in rows[0]]
+    if missing:
+        raise InputError(
+            f"{path} does not look like a file `ofc label` wrote: "
+            f"missing {', '.join(missing)}."
+        )
+    return rows
+
+
+def command_counts(args) -> int:
+    rows = _read_labelled(args.labelled)
+    counts = counting.count(rows)
+
+    # The table and the caveat that qualifies it go to the same stream, so
+    # they cannot arrive in the wrong order or be separated by a redirect.
+    print(counts.render())
+    print(
+        "\nThese count labels, not people: a theme's number is how many comments "
+        "it was assigned to and a quote was found for, not how many people hold "
+        "that view, and not a claim that those are the right comments."
+    )
+
+    if args.output:
+        write_rows(args.output, counting.COUNT_COLUMNS, counts.as_rows())
+        _log(f"Wrote {args.output}.")
+    return 0
+
+
+def command_review(args) -> int:
+    rows = _read_labelled(args.labelled)
+    chosen = reviewing.sample(
+        rows, args.sample, seed=args.seed, include_unassigned=args.include_unassigned
+    )
+
+    if not chosen:
+        raise InputError("Nothing to review: no rows matched.")
+
+    print(reviewing.render(chosen))
+    print(
+        f"\n{_plural(len(chosen), 'row')} sampled from {_plural(len(rows), 'row')} "
+        f"(seed {args.seed}, so the same sample comes back on a re-run)."
+    )
+    print(
+        "Read each quote against the comment beside it. This tool does not turn "
+        "your answers into a score: a number computed by one reader on a sample "
+        "they chose would look like validation, and it is not."
+    )
+
+    write_rows(args.output, reviewing.REVIEW_COLUMNS, reviewing.to_review_rows(chosen))
+    _log(f"Wrote {args.output} with an empty `agree` column to fill in.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ofc",
@@ -371,6 +444,51 @@ def build_parser() -> argparse.ArgumentParser:
         help="How many comments to label at once (default 4).",
     )
     label_parser.set_defaults(handler=command_label)
+
+    counts_parser = subparsers.add_parser(
+        "counts",
+        help="Count the labelled rows. Reads a file, calls no model, costs nothing.",
+    )
+    counts_parser.add_argument(
+        "--labelled",
+        default="labelled.csv",
+        metavar="FILE",
+        help="A file written by `ofc label`.",
+    )
+    counts_parser.add_argument(
+        "--output", metavar="FILE", help="Also write the counts as a CSV."
+    )
+    counts_parser.set_defaults(handler=command_counts)
+
+    review_parser = subparsers.add_parser(
+        "review",
+        help="Draw a sample to read by hand, with each quote beside its comment.",
+    )
+    review_parser.add_argument(
+        "--labelled",
+        default="labelled.csv",
+        metavar="FILE",
+        help="A file written by `ofc label`.",
+    )
+    review_parser.add_argument(
+        "--sample", type=_positive_int, default=20, metavar="N", help="How many rows to draw."
+    )
+    review_parser.add_argument(
+        "--seed",
+        type=_non_negative_int,
+        default=0,
+        metavar="N",
+        help="Fixed by default, so re-running gives the same sample.",
+    )
+    review_parser.add_argument(
+        "--include-unassigned",
+        action="store_true",
+        help="Also sample comments no theme was assigned to.",
+    )
+    review_parser.add_argument(
+        "--output", default="review.csv", metavar="FILE", help="Where to write the sheet."
+    )
+    review_parser.set_defaults(handler=command_review)
 
     return parser
 
