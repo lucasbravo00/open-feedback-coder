@@ -14,10 +14,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["streamlit>=1.36"]
+# pandas is imported directly by app.py. Streamlit happens to pull it in,
+# but relying on another package's dependency is how a working app breaks
+# on somebody else's machine.
+ui = ["streamlit>=1.36", "pandas>=2.0"]
 
 [dependency-groups]
-dev = ["pytest>=8.0", "streamlit>=1.36"]
+dev = ["pytest>=8.0", "streamlit>=1.36", "pandas>=2.0"]
 
 [project.scripts]
 ofc = "open_feedback_coder.cli:main"

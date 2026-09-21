@@ -915,11 +915,15 @@ dependencies = [
 
 [package.optional-dependencies]
 ui = [
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "streamlit" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "pandas", version = "3.0.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pytest" },
     { name = "streamlit" },
 ]
@@ -927,6 +931,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "openai", specifier = ">=1.40" },
+    { name = "pandas", marker = "extra == 'ui'", specifier = ">=2.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "streamlit", marker = "extra == 'ui'", specifier = ">=1.36" },
     { name = "tiktoken", specifier = ">=0.7" },
@@ -935,6 +940,7 @@ provides-extras = ["ui"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "pandas", specifier = ">=2.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "streamlit", specifier = ">=1.36" },
 ]
