@@ -24,6 +24,9 @@ TRICKY_COMMENTS = [
     "Tabs\tand\tnon-breaking\u00a0spaces everywhere.",
     "café conversations are the only real feedback channel",
     "A" * 300 + " and then something specific about workload",
+    # Invisible characters that survive a copy-and-paste out of a web form.
+    "Pay\u00adrise never happened and co\u200boperation was worse.",
+    "Zero\u2060width\ufeff joiners\u200d hide inside words.",
 ]
 
 

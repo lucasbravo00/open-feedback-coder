@@ -216,16 +216,26 @@ def test_every_answer_in_the_whole_corpus_behaves():
     assert len(comments) > 250
 
     rng = random.Random(90210)
-    checked = 0
+    covered = 0
+
     for comment in comments:
-        for start, end in word_spans(comment.text, rng, count=3, minimum_words=4):
+        spans = list(word_spans(comment.text, rng, count=3, minimum_words=4))
+
+        # Most of this corpus is one- and two-word answers to write-in options,
+        # too short for word_spans to slice. Quoting such an answer whole is
+        # exactly what a model would do with it, so that is what is checked.
+        if not spans:
+            spans = [(0, len(comment.text))]
+
+        for start, end in spans:
             span = comment.text[start:end]
             match = locate_quote(as_a_model_would_retype(span), comment.text)
             assert match is not None, f"{comment.comment_id}: {span[:50]!r}"
             assert comment.text[match.start : match.end] == match.text
-            checked += 1
 
-    assert checked > 100
+        covered += 1
+
+    assert covered == len(comments), "every answer must be exercised, not just the long ones"
 
 
 def test_the_fixture_is_committed_but_the_full_corpus_is_not():

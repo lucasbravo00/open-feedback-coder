@@ -61,13 +61,36 @@ class Upload(io.BytesIO):
     type = "text/csv"
 
 
+# Comment A1 names the same theme twice: the repeat is dropped, the comment
+# stays. A4 is clean. Between them they drive the whole results section.
+LABELS = {
+    "Onboarding dragged on and nobody owned it.": {
+        "unassigned": False,
+        "assignments": [
+            {"theme_id": "onboarding", "role": "primary", "valence": "negative",
+             "quote": "nobody owned it"},
+            {"theme_id": "onboarding", "role": "secondary", "valence": "negative",
+             "quote": "Onboarding dragged on"},
+        ],
+    },
+    "The pay is genuinely competitive.": {
+        "unassigned": False,
+        "assignments": [
+            {"theme_id": "pay", "role": "primary", "valence": "positive",
+             "quote": "genuinely competitive"},
+        ],
+    },
+}
+
+
 class StubClient:
     def __init__(self, *args, **kwargs):
         self.model = "stub-model"
 
     def complete_json(self, system, user, schema, schema_name):
-        assert schema_name == "codebook_proposal"
-        return PROPOSAL, Usage(input_tokens=100, output_tokens=50)
+        if schema_name == "codebook_proposal":
+            return PROPOSAL, Usage(input_tokens=100, output_tokens=50)
+        return LABELS[user.split("Comment:\n", 1)[1]], Usage(input_tokens=10, output_tokens=5)
 
 
 class StubCounter:
@@ -178,3 +201,58 @@ def test_a_half_filled_new_row_is_refused_rather_than_named_nan(app):
     assert any("has no 'id'" in error.value for error in app.error), [
         error.value for error in app.error
     ]
+
+
+def labelled(app):
+    """Drive the app all the way to its results section."""
+    app.run()
+    app.selectbox[1].set_value("open_answer").run()
+    app.button[0].click().run()
+    app.button[1].click().run()
+    assert not app.exception, app.exception
+    return app
+
+
+def test_the_app_reaches_its_results(app):
+    labelled(app)
+
+    assert "5. Results" in [s.value for s in app.subheader]
+    assert [(m.label, m.value) for m in app.metric] == [
+        ("Comments labelled", "2"),
+        ("Unassigned", "0"),
+        ("Excluded after checking", "0"),
+    ]
+
+
+def test_every_quote_shown_is_a_span_of_the_comment_beside_it(app):
+    labelled(app)
+
+    table = next(d.value for d in app.dataframe if "quote_start" in d.value.columns)
+    assert len(table) == 2
+    for _, row in table.iterrows():
+        start, end = int(row["quote_start"]), int(row["quote_end"])
+        assert row["comment_text"][start:end] == row["quote"] != ""
+
+
+def test_a_dropped_repeat_is_shown_with_its_scope(app):
+    """The app must report a drop, not quietly keep it to itself."""
+    labelled(app)
+
+    table = next(d.value for d in app.dataframe if "scope" in d.value.columns)
+    assert list(table["scope"]) == ["assignment"]
+    assert list(table["failure_reason"]) == ["duplicate_theme"]
+    assert list(table["comment_id"]) == ["1"]
+
+    warning = app.warning[0].value
+    assert "1 repeated theme assignment dropped from 1 comment" in warning
+    assert "assignments" not in warning, "a count of one should not be plural"
+
+
+def test_the_results_survive_nothing_that_should_invalidate_them(app):
+    """Re-running with no interaction leaves the same results in place."""
+    labelled(app)
+    first = [(m.label, m.value) for m in app.metric]
+
+    app.run()
+
+    assert [(m.label, m.value) for m in app.metric] == first

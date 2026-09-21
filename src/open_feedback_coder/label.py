@@ -174,6 +174,20 @@ def assemble_comment_rows(comment, response: dict, codebook: Codebook) -> Commen
             )
         )
 
+    # The schema allows both keys to be set, and a model can contradict itself
+    # while staying valid. Letting either side win silently would throw away
+    # labels with no record, or publish labels the model disowned; neither is
+    # something to guess at on the model's behalf.
+    if response.get("unassigned") and assignments:
+        return CommentOutcome(
+            failure=_failure(
+                comment,
+                "malformed_response",
+                f"the model marked the comment unassigned and also returned "
+                f"{len(assignments)} assignments",
+            )
+        )
+
     if response.get("unassigned") or not assignments:
         return CommentOutcome(rows=[_unassigned_row(comment)])
 

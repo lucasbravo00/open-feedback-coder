@@ -287,3 +287,38 @@ def test_every_rejection_says_what_it_rejected(book, make_comment):
 
     assert kept.dropped[0]["scope"] == "assignment"
     assert excluded.failure["scope"] == "comment"
+
+
+def test_a_response_that_contradicts_itself_is_recorded_not_guessed(book, make_comment):
+    """`unassigned: true` alongside assignments is valid under the schema.
+
+    Honouring either side silently would throw away labels with no record, or
+    publish labels the model disowned. Both are guesses about what it meant.
+    """
+    comment = make_comment(COMMENT_TEXT)
+
+    outcome = assemble_comment_rows(
+        comment,
+        {
+            "unassigned": True,
+            "assignments": [
+                assignment("onboarding", "primary", "negative", "nobody owned it")
+            ],
+        },
+        book,
+    )
+
+    assert outcome.rows == []
+    assert outcome.failed
+    assert outcome.failure["failure_reason"] == "malformed_response"
+    assert outcome.failure["scope"] == "comment"
+    assert "also returned 1 assignments" in outcome.failure["detail"]
+
+
+def test_unassigned_on_its_own_is_still_the_ordinary_no_theme_case(book, make_comment):
+    comment = make_comment(COMMENT_TEXT)
+
+    outcome = assemble_comment_rows(comment, response(unassigned=True), book)
+
+    assert not outcome.failed
+    assert outcome.rows[0]["assignment"] == "unassigned"

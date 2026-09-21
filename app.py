@@ -30,6 +30,7 @@ from open_feedback_coder.csv_io import (
 )
 from open_feedback_coder.editing import codebook_from_records
 from open_feedback_coder.llm import Client, ConfigError, ModelError
+from open_feedback_coder.phrasing import plural
 
 st.set_page_config(page_title="open-feedback-coder", layout="wide")
 
@@ -269,23 +270,30 @@ st.caption(
     "the model. Every quote below is a verbatim span of the comment beside it."
 )
 
-st.dataframe(pd.DataFrame(run.rows), width="stretch", hide_index=True)
+# The table and the download are built from one variable, so what is shown
+# and what is saved cannot drift apart.
+labelled_rows = run.rows
+st.dataframe(pd.DataFrame(labelled_rows), width="stretch", hide_index=True)
 st.download_button(
     "Download labelled.csv",
-    rows_to_csv(OUTPUT_COLUMNS, run.rows),
+    rows_to_csv(OUTPUT_COLUMNS, labelled_rows),
     file_name="labelled.csv",
     mime="text/csv",
 )
 
-if run.rejections:
+rejection_rows = run.rejections
+if rejection_rows:
     dropped = run.dropped_assignments
     notes = []
     if run.comments_failed:
-        notes.append(f"{run.comments_failed:,} comments were excluded because a check failed")
-    if dropped:
         notes.append(
-            f"{len(dropped):,} repeated theme assignments were dropped from comments "
-            "that were kept"
+            f"{plural(run.comments_failed, 'comment')} excluded because a check failed"
+        )
+    if dropped:
+        affected = len({entry["comment_id"] for entry in dropped})
+        notes.append(
+            f"{plural(len(dropped), 'repeated theme assignment')} dropped from "
+            f"{plural(affected, 'comment')} that stayed in the results"
         )
     st.warning(". ".join(note[0].upper() + note[1:] for note in notes) + ".")
     st.caption(
@@ -293,10 +301,10 @@ if run.rejections:
         "of the results, `assignment` for one label removed from a comment that is "
         "still in them."
     )
-    st.dataframe(pd.DataFrame(run.rejections), width="stretch", hide_index=True)
+    st.dataframe(pd.DataFrame(rejection_rows), width="stretch", hide_index=True)
     st.download_button(
         "Download labelling_failures.csv",
-        rows_to_csv(FAILURE_COLUMNS, run.rejections),
+        rows_to_csv(FAILURE_COLUMNS, rejection_rows),
         file_name="labelling_failures.csv",
         mime="text/csv",
     )

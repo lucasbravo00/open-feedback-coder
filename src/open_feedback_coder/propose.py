@@ -20,41 +20,69 @@ _NON_SLUG = re.compile(r"[^a-z0-9]+")
 # Punctuation a model may carry over from however the corpus was delimited.
 _ID_WRAPPERS = re.compile(r"""^[\s\[\]<>#()"'.,:;]+|[\s\[\]<>#()"'.,:;]+$""")
 _ID_KEYWORD = re.compile(r"^(?:comment|id|no|num|number)\b[\s:.#-]*", re.IGNORECASE)
+# Matched pairs are removed together, so that unwrapping <comment [9]> yields
+# "comment [9]" and not "comment [9" - greedy stripping from both ends eats
+# the closing bracket of an id that legitimately contains one.
+_WRAPPER_PAIRS = (("<", ">"), ("[", "]"), ("(", ")"), ("{", "}"), ('"', '"'), ("'", "'"))
+
+
+def _unwrap_once(text: str) -> str:
+    for opening, closing in _WRAPPER_PAIRS:
+        if len(text) >= 2 and text.startswith(opening) and text.endswith(closing):
+            return text[1:-1]
+    return text
 
 
 def comment_id_candidates(value: object) -> list[str]:
     """Ways a model might have written a comment id, literal value first.
 
-    Formatting repair only, in the same spirit as `slugify`. The literal value
-    is always tried before any repair, so an id that genuinely contains
-    brackets or the word "comment" still resolves to its own comment. Nothing
-    here invents an id: a value that matches no comment after all of these is
-    reported as unknown rather than guessed at.
+    Formatting repair only, in the same spirit as `slugify`. Each form is
+    reached by removing a matched pair of wrappers, a leading keyword, or any
+    remaining edge punctuation, and every form each of those produces is tried
+    in turn. Nothing here invents an id.
     """
-    text = str(value)
-    candidates = [text, text.strip()]
-
-    unwrapped = _ID_WRAPPERS.sub("", text)
-    candidates.append(unwrapped)
-
-    without_keyword = _ID_KEYWORD.sub("", unwrapped).strip()
-    candidates.append(_ID_WRAPPERS.sub("", without_keyword))
-
     seen: set[str] = set()
-    ordered = []
-    for candidate in candidates:
-        if candidate and candidate not in seen:
-            seen.add(candidate)
-            ordered.append(candidate)
+    ordered: list[str] = []
+    frontier = [str(value)]
+
+    while frontier:
+        current = frontier.pop(0).strip()
+        if not current or current in seen:
+            continue
+        seen.add(current)
+        ordered.append(current)
+        frontier.append(_unwrap_once(current))
+        frontier.append(_ID_KEYWORD.sub("", current))
+        frontier.append(_ID_WRAPPERS.sub("", current))
+
     return ordered
 
 
 def resolve_comment(by_id: dict, value: object):
-    """Return the comment a model-supplied id points at, or None."""
-    for candidate in comment_id_candidates(value):
+    """Return the comment a model-supplied id points at, or None.
+
+    The literal value always wins, so a corpus whose ids genuinely contain
+    brackets resolves to its own comments. Failing that, the repaired forms
+    have to agree: if two of them point at different comments the id is
+    ambiguous, and an ambiguous id is reported as unknown rather than decided
+    by whichever repair happened to run first.
+    """
+    candidates = comment_id_candidates(value)
+    if not candidates:
+        return None
+
+    literal = by_id.get(candidates[0])
+    if literal is not None:
+        return literal
+
+    matched = {}
+    for candidate in candidates[1:]:
         comment = by_id.get(candidate)
         if comment is not None:
-            return comment
+            matched[comment.comment_id] = comment
+
+    if len(matched) == 1:
+        return next(iter(matched.values()))
     return None
 
 

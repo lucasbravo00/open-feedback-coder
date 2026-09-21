@@ -7,7 +7,12 @@ labels do, so a theme cannot arrive illustrated by a quote that nobody wrote.
 import pytest
 
 from open_feedback_coder.prompts import PROPOSE_SYSTEM, render_corpus
-from open_feedback_coder.propose import build_codebook, resolve_comment, slugify
+from open_feedback_coder.propose import (
+    build_codebook,
+    comment_id_candidates,
+    resolve_comment,
+    slugify,
+)
 
 
 @pytest.fixture
@@ -244,6 +249,56 @@ def test_a_wrapped_id_that_matches_nothing_is_still_rejected(corpus):
                     "label": "Onboarding",
                     "description": "",
                     "examples": [{"comment_id": "[404]", "quote": "Nobody owned my onboarding"}],
+                }
+            ]
+        },
+        corpus,
+        max_themes=15,
+    )
+
+    assert result.codebook.themes[0].examples == []
+    assert result.rejected_examples[0]["reason"] == "unknown_comment_id"
+
+
+def test_a_wrapped_id_whose_own_punctuation_matters_is_not_mangled():
+    """`<comment [9]>` used to unwrap to `comment [9`, eating the id's bracket."""
+    assert "[9]" in comment_id_candidates("<comment [9]>")
+    assert "(7)" in comment_id_candidates("comment (7)")
+    assert "(7)" in comment_id_candidates("<comment (7)>")
+
+
+def test_an_ambiguous_id_is_reported_unknown_rather_than_guessed(make_comment):
+    """Two ids differing only by punctuation must not be silently conflated."""
+    by_id = {
+        "(7)": make_comment("the wrapped one", "(7)", 1),
+        "7": make_comment("the bare one", "7", 2),
+    }
+
+    # The literal value is unambiguous and still wins.
+    assert resolve_comment(by_id, "(7)").text == "the wrapped one"
+    assert resolve_comment(by_id, "7").text == "the bare one"
+
+    # A decorated id could be either, so it resolves to neither.
+    assert resolve_comment(by_id, "comment (7)") is None
+    assert resolve_comment(by_id, "<comment (7)>") is None
+
+
+def test_an_ambiguous_example_is_rejected_not_misattributed(make_comment):
+    """The silent failure this guards: a quote credited to the wrong comment."""
+    shared = "I would find more training helpful"
+    corpus = [
+        make_comment(f"{shared} in my first month.", "(7)", 1),
+        make_comment(f"Honestly, {shared}.", "7", 2),
+    ]
+
+    result = build_codebook(
+        {
+            "themes": [
+                {
+                    "id": "training",
+                    "label": "Training",
+                    "description": "",
+                    "examples": [{"comment_id": "comment (7)", "quote": shared}],
                 }
             ]
         },

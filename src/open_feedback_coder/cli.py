@@ -10,6 +10,7 @@ from .budget import BudgetExceeded, Cancelled, TokenCounter, check_input_limit, 
 from .codebook import Codebook, CodebookError
 from .csv_io import FAILURE_COLUMNS, OUTPUT_COLUMNS, InputError, read_comments, write_rows
 from .llm import Client, ConfigError, ModelError
+from .phrasing import plural as _plural
 
 DEFAULT_MAX_THEMES = 15
 
@@ -26,11 +27,6 @@ def _log(message: str = "", end: str = "\n") -> None:
         print(message, file=sys.stderr, end=end, flush=True)
     except (BrokenPipeError, OSError, ValueError):
         pass
-
-
-def _plural(count: int, singular: str, plural: str | None = None) -> str:
-    """Return "1 comment" or "4 comments", so the run summary reads properly."""
-    return f"{count:,} {singular if count == 1 else (plural or singular + 's')}"
 
 
 def _positive_int(value: str) -> int:
@@ -224,8 +220,8 @@ def command_label(args) -> int:
     if dropped:
         affected = len({entry["comment_id"] for entry in dropped})
         _log(
-            f"Dropped {_plural(len(dropped), 'repeated theme assignment')} from "
-            f"{_plural(affected, 'comment')} that were kept."
+            f"Kept {_plural(affected, 'comment')} after dropping "
+            f"{_plural(len(dropped), 'repeated theme assignment')}."
         )
     _log(
         f"Wrote {args.output} ({_plural(len(run.rows), 'row')}, "

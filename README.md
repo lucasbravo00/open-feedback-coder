@@ -253,7 +253,8 @@ what to do about it is yours to decide.
 
 ## Trying it on real open text
 
-The repository ships no survey data. `scripts/download_dataset.py` converts
+Apart from ten answers kept as test fixtures, described under Development
+below, the repository ships no survey data. `scripts/download_dataset.py` converts
 the open-ended answers of the 2025 UC OSPO Network open source survey into a
 CSV this tool can read.
 
@@ -321,11 +322,16 @@ model is replaced by a stand-in that returns fixed responses, which is what
 makes the failure paths reachable at all.
 
 The central test checks the quote guarantee over randomised slices of comments
-containing curly quotes, em dashes, non-breaking spaces, zero-width
-characters, CRLF line endings and decomposed accents. It is then checked again
-on the rows the labeller builds, and again on the CSV an end-to-end run writes
-to disk, because that file is what anyone auditing the output will actually
-read.
+containing curly quotes, em dashes, non-breaking spaces, soft hyphens,
+zero-width spaces and joiners, byte-order marks and CRLF line endings. It is
+then checked again on the rows the labeller builds, and again on the CSV an
+end-to-end run writes to disk, because that file is what anyone auditing the
+output will actually read.
+
+Composition differences — a decomposed accent against its composed form — are
+covered by their own tests rather than by that one. The randomised test
+normalises both sides to NFC before comparing, as the pipeline does, so by
+construction it cannot produce a pair that differs only in composition.
 
 Ten of the real Q12 answers are committed under `tests/fixtures/`, with their
 provenance in `tests/fixtures/SOURCE.md`. They carry what invented test
@@ -334,8 +340,12 @@ bracketed redactions made by the survey's own authors, respondents numbering
 their own points, and lengths up to 1042 characters. The suite quotes hundreds
 of spans of them back at the verifier, retyped the way a model flattens
 typography, and checks that what gets stored is the source text rather than
-the retyping. When the full corpus has been downloaded, the same checks run
-over all 318 answers.
+the retyping.
+
+When the full corpus has been downloaded, every one of its 318 answers is
+checked the same way. Most of that corpus is one- and two-word answers to
+write-in options, too short to slice into spans, so those are quoted whole —
+which is what a model would do with them anyway.
 
 The web interface is driven by `streamlit.testing.v1.AppTest` rather than left
 to a screenshot. The one bug that made it useless — every upload failed — was
