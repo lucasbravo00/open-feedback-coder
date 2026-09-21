@@ -46,9 +46,9 @@ These are properties of the code, checked by the test suite:
   returned.
 - **No number comes from the model.** The tool prints three counts —
   comments labelled, comments unassigned, comments excluded — and tallies each
-  in code as the run goes. It does not compute frequencies for you. The long
-  format is there so that counting themes is a pivot table you build and can
-  check, rather than a number this tool hands you.
+  in code as the run goes, and `ofc counts` tallies comments per theme the
+  same way, over the output file. Every number this tool prints was counted
+  by it; none was asked of a model.
 
 What it does **not** tell you:
 
@@ -68,8 +68,10 @@ employees that is the first thing anyone will ask about, so here is exactly
 what leaves the machine and when.
 
 **`ofc propose`** sends the whole corpus in a single request: the instructions
-plus every comment, in full. Proposing a codebook means reading everything,
-and there is no sampling.
+plus every comment, in full, each labelled with its id so the model can say
+which comment a quote came from. If you passed `--id-column`, that column's
+values go too. Proposing a codebook means reading everything, and there is no
+sampling.
 
 **`ofc label`** sends one request per comment: the instructions, your approved
 codebook, and that one comment's text. Over a run, every comment is sent
@@ -95,9 +97,9 @@ getting them wrong here would be worse than saying nothing: read
 **There is no offline mode.** If this text cannot leave your infrastructure,
 this tool cannot help you in this version, and no flag changes that.
 
-**The outputs carry the feedback too.** `labelled.csv` and
-`labelling_failures.csv` contain the full text of every comment, and
-`codebook.evidence.md` and `review.csv` contain verbatim quotes. Treat all of
+**The outputs carry the feedback too.** `labelled.csv`,
+`labelling_failures.csv` and `review.csv` contain the full text of the
+comments they cover, and `codebook.evidence.md` contains verbatim quotes. Treat all of
 them the way you treat the source file. `data/` is in `.gitignore`; your
 output files are wherever you pointed `--output`.
 

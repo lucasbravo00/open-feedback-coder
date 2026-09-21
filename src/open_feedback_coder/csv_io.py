@@ -231,30 +231,43 @@ class RowWriter:
             self._writer = None
 
 
-def read_partial(path: str) -> tuple[list[dict], set[tuple]]:
-    """Read a partial output file, and say which comments are safely finished.
+def read_partial(path: str) -> tuple[list[dict], set[tuple], set[tuple]]:
+    """Read a partial output file and sort its comments into safe and not.
 
-    The rows of the last comment in the file are dropped and its key is not
-    returned. A run killed mid-write may have flushed only some of a comment's
-    rows, and a comment published with two of its three labels is exactly what
-    the all-or-nothing rule exists to prevent. Redoing one comment costs one
-    call; trusting a truncated one costs the guarantee.
+    A run killed mid-write may have flushed only some of a comment's rows, and
+    a comment published with two of its three labels is exactly what the
+    all-or-nothing rule exists to prevent. So the last comment in the file is
+    always treated as unsafe: redoing one comment costs one call, trusting a
+    truncated one costs the guarantee.
 
-    Returns the rows worth keeping and the keys of the comments they cover.
-    A file that does not exist is simply an empty partial run.
+    Trailing rows that are short are discarded first. A line cut off partway
+    parses with None in the columns it never reached, and if the cut landed
+    inside comment_id or row_number the fragment carries a key belonging to no
+    comment at all - which would leave the genuinely last comment looking
+    complete.
+
+    Returns the rows worth keeping, the keys they cover, and the keys that
+    must be redone. A caller reading two files has to pool the unsafe keys
+    from both before trusting either: a comment can be last in one file and
+    mid-file in the other.
     """
     if not os.path.exists(path):
-        return [], set()
+        return [], set(), set()
 
     with open(path, newline="", encoding="utf-8") as handle:
         rows = list(csv.DictReader(handle))
 
-    if not rows:
-        return [], set()
+    # A short row means the write was cut off inside it. Only trailing ones
+    # can be torn; a short row in the middle would be a different problem.
+    while rows and any(value is None for value in rows[-1].values()):
+        rows.pop()
 
-    last_key = comment_key(rows[-1])
-    kept = [row for row in rows if comment_key(row) != last_key]
-    return kept, {comment_key(row) for row in kept}
+    if not rows:
+        return [], set(), set()
+
+    unsafe = {comment_key(rows[-1])}
+    kept = [row for row in rows if comment_key(row) not in unsafe]
+    return kept, {comment_key(row) for row in kept}, unsafe
 
 
 def comment_key(row) -> tuple:

@@ -98,6 +98,32 @@ def to_review_rows(rows, marks: dict | None = None) -> list[dict]:
     return sheet
 
 
+def orphaned_marks(rows, marks: dict) -> list[dict]:
+    """Marked lines from an older sheet that this sample does not contain.
+
+    A smaller sample, a different seed or a relabelled corpus leaves marks
+    with no row to sit on. Dropping them would delete work somebody did by
+    hand, so they are kept at the end of the sheet, where they can be read and
+    deleted deliberately.
+    """
+    present = {mark_key(row) for row in rows}
+    return [
+        {
+            "comment_id": key[0],
+            "row_number": key[1],
+            "assignment": key[2],
+            "theme_label": key[3],
+            "valence": "",
+            "quote": "",
+            "comment_text": "(not in the current sample)",
+            "agree": mark["agree"],
+            "notes": mark["notes"],
+        }
+        for key, mark in marks.items()
+        if key not in present
+    ]
+
+
 def render(rows, width: int = 88) -> str:
     """Print the sample so it can be read without opening a spreadsheet."""
     if not rows:

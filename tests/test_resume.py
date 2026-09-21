@@ -68,14 +68,14 @@ def read(path):
 
 
 def test_a_missing_file_is_an_empty_partial_run(tmp_path):
-    assert read_partial(str(tmp_path / "absent.csv")) == ([], set())
+    assert read_partial(str(tmp_path / "absent.csv")) == ([], set(), set())
 
 
 def test_a_header_only_file_is_an_empty_partial_run(tmp_path):
     path = tmp_path / "labelled.csv"
     write(path, OUTPUT_COLUMNS, [])
 
-    assert read_partial(str(path)) == ([], set())
+    assert read_partial(str(path)) == ([], set(), set())
 
 
 def test_the_last_comment_is_dropped_because_it_may_be_half_written(tmp_path):
@@ -91,7 +91,7 @@ def test_the_last_comment_is_dropped_because_it_may_be_half_written(tmp_path):
         ],
     )
 
-    kept, done = read_partial(str(path))
+    kept, done, unsafe = read_partial(str(path))
 
     assert {key[0] for key in done} == {"1", "2"}
     assert [row["comment_id"] for row in kept] == ["1", "2"]
@@ -104,12 +104,12 @@ def test_a_truncated_final_line_cannot_be_mistaken_for_a_finished_comment(tmp_pa
     with open(path, "a", encoding="utf-8") as handle:
         handle.write("3,3,Nobody owned it here eit")
 
-    kept, done = read_partial(str(path))
+    kept, done, unsafe = read_partial(str(path))
 
-    # 3 is the last comment in the file and its line is torn, so it is dropped.
-    # 1 and 2 were written whole before it and are safe to keep.
-    assert {key[0] for key in done} == {"1", "2"}
-    assert [row["comment_id"] for row in kept] == ["1", "2"]
+    # The torn fragment is discarded, then 2 is dropped for being last.
+    assert {key[0] for key in done} == {"1"}
+    assert {key[0] for key in unsafe} == {"2"}
+    assert [row["comment_id"] for row in kept] == ["1"]
 
 
 def test_the_key_uses_the_row_number_so_duplicate_ids_do_not_collide(tmp_path):
@@ -122,7 +122,7 @@ def test_the_key_uses_the_row_number_so_duplicate_ids_do_not_collide(tmp_path):
     third["row_number"] = "3"
     write(path, OUTPUT_COLUMNS, [first, second, third])
 
-    _, done = read_partial(str(path))
+    _, done, _unsafe = read_partial(str(path))
 
     assert done == {("same", "1"), ("same", "2")}
 
@@ -323,3 +323,106 @@ def test_the_guarantee_survives_a_resume(project):
     for row in read(tmp_path / "labelled.csv"):
         start, end = int(row["quote_start"]), int(row["quote_end"])
         assert row["comment_text"][start:end] == row["quote"]
+
+
+# The fifth review found that resuming could delete paid-for rows. These pin
+# each way it did.
+
+
+def test_a_comment_last_in_one_file_and_not_the_other_is_redone_not_deleted(project):
+    """The worst of it: deleted from one file, marked done by the other.
+
+    This is the state an ordinary run leaves whenever its last comment was
+    excluded whole and an earlier one had a repeated theme dropped.
+    """
+    run, client, tmp_path = project
+    labelled = tmp_path / "labelled.csv"
+    failures = tmp_path / "failures.csv"
+
+    # Comment 2 is last in labelled.csv, and also has a dropped-assignment row
+    # in failures.csv where it is NOT last.
+    write(labelled, OUTPUT_COLUMNS, [labelled_row("1"), labelled_row("2")])
+    write(
+        failures,
+        FAILURE_COLUMNS,
+        [
+            {
+                "scope": "assignment",
+                "comment_id": "2",
+                "row_number": "2",
+                "comment_text": TEXT["2"],
+                "failure_reason": "duplicate_theme",
+                "detail": "",
+                "rejected_theme_id": "pay",
+                "rejected_quote": "pay is fine",
+            },
+            {
+                "scope": "comment",
+                "comment_id": "3",
+                "row_number": "3",
+                "comment_text": TEXT["3"],
+                "failure_reason": "quote_not_found_in_comment",
+                "detail": "",
+                "rejected_theme_id": "pay",
+                "rejected_quote": "invented",
+            },
+        ],
+    )
+
+    assert run("--resume") == 0
+
+    # 2 and 3 are both unsafe, so both are redone; nothing is silently lost.
+    assert TEXT["2"] in client.asked
+    assert TEXT["3"] in client.asked
+    assert {row["comment_id"] for row in read(labelled)} == {"1", "2", "3", "4"}
+
+
+def test_a_tear_inside_the_comment_id_does_not_leave_a_half_labelled_comment(tmp_path):
+    """A fragment cut off in the first field parses to a key of its own, so it
+    used to be dropped while the comment it belonged to looked complete."""
+    path = tmp_path / "labelled.csv"
+    write(
+        path,
+        OUTPUT_COLUMNS,
+        [labelled_row("1"), labelled_row("3"), labelled_row("3", "onboarding", "secondary")],
+    )
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write("3")  # a third row for comment 3, cut off inside its id
+
+    kept, done, unsafe = read_partial(str(path))
+
+    assert ("3", "3") not in done, "comment 3 may be missing a label"
+    assert ("3", "3") in unsafe
+    assert [row["comment_id"] for row in kept] == ["1"]
+
+
+def test_nothing_is_rewritten_when_the_preflight_stops_the_run(project, monkeypatch):
+    """A command that says "nothing was sent" must not already have deleted rows."""
+    run, _, tmp_path = project
+    labelled = tmp_path / "labelled.csv"
+    original = [labelled_row("1"), labelled_row("2")]
+    write(labelled, OUTPUT_COLUMNS, original)
+    before = labelled.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        cli, "confirm", lambda *a, **k: (_ for _ in ()).throw(cli.Cancelled("Nothing was sent."))
+    )
+
+    assert run("--resume") == 130
+    assert labelled.read_text(encoding="utf-8") == before
+
+
+def test_resuming_against_a_different_corpus_is_refused(project):
+    """Otherwise the output file quietly ends up holding two corpora."""
+    run, client, tmp_path = project
+    write(
+        tmp_path / "labelled.csv",
+        OUTPUT_COLUMNS,
+        [
+            dict(labelled_row("1"), comment_id="90", row_number="90"),
+            dict(labelled_row("2"), comment_id="91", row_number="91"),
+        ],
+    )
+
+    assert run("--resume") == 1
+    assert client.asked == []

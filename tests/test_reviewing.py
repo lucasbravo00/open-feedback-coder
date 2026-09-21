@@ -196,7 +196,7 @@ def test_marks_already_made_survive_a_re_run(tmp_path, capsys):
     assert len(sheet) == 5
     assert all(entry["agree"] == "yes" for entry in sheet)
     assert all(entry["notes"] == "the quote fits" for entry in sheet)
-    assert "keeping 5 marks already in it" in capsys.readouterr().err
+    assert "carrying 5 marks onto rows in this sample" in capsys.readouterr().err
 
 
 def test_overwrite_starts_the_sheet_again(tmp_path):
@@ -250,3 +250,62 @@ def test_review_refuses_the_review_sheet_it_just_wrote(tmp_path):
     cli.main(["review", "--labelled", str(labelled), "--sample", "5", "--output", str(output)])
 
     assert cli.main(["review", "--labelled", str(output), "--output", str(tmp_path / "x.csv")]) == 1
+
+
+def test_a_mark_whose_row_left_the_sample_is_kept_not_deleted(tmp_path, capsys):
+    """Narrowing the sample used to delete the marks outside it."""
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    base = ["review", "--labelled", str(labelled), "--output", str(output)]
+
+    cli.main(base + ["--sample", "10"])
+    mark_the_sheet(output, agree="yes", notes="checked")
+    marked_before = {entry["comment_id"] for entry in read_sheet(output)}
+
+    cli.main(base + ["--sample", "3"])
+
+    sheet = read_sheet(output)
+    assert {entry["comment_id"] for entry in sheet} >= marked_before
+    assert all(entry["agree"] == "yes" for entry in sheet if entry["comment_id"] in marked_before)
+    kept_out = [e for e in sheet if e["comment_text"] == "(not in the current sample)"]
+    assert kept_out, "marks outside the sample must still be in the file"
+
+    message = capsys.readouterr().err
+    assert "carrying 3 marks" in message
+    assert "not in this sample" in message
+
+
+def test_a_labelled_file_with_a_byte_order_mark_is_read(tmp_path):
+    """What Excel's "CSV UTF-8" save produces."""
+    labelled = tmp_path / "labelled.csv"
+    with open(labelled, "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(ROWS[0]))
+        writer.writeheader()
+        writer.writerows(ROWS[:4])
+
+    assert cli.main(["counts", "--labelled", str(labelled)]) == 0
+    assert (
+        cli.main(
+            ["review", "--labelled", str(labelled), "--output", str(tmp_path / "r.csv")]
+        )
+        == 0
+    )
+
+
+def test_a_review_sheet_with_a_byte_order_mark_keeps_its_marks(tmp_path):
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    arguments = ["review", "--labelled", str(labelled), "--sample", "5", "--output", str(output)]
+    cli.main(arguments)
+
+    sheet = read_sheet(output)
+    for entry in sheet:
+        entry["agree"] = "yes"
+    with open(output, "w", newline="", encoding="utf-8-sig") as handle:
+        writer = csv.DictWriter(handle, fieldnames=REVIEW_COLUMNS)
+        writer.writeheader()
+        writer.writerows(sheet)
+
+    cli.main(arguments)
+
+    assert all(entry["agree"] == "yes" for entry in read_sheet(output))

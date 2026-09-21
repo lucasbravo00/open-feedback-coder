@@ -265,10 +265,21 @@ def command_label(args) -> int:
         )
 
     finished: set[tuple] = set()
+    restore: list[tuple] = []
     if args.resume:
-        kept_rows, from_output = read_partial(args.output)
-        kept_rejections, from_failures = read_partial(args.failures)
-        finished = from_output | from_failures
+        kept_rows, from_output, unsafe_output = read_partial(args.output)
+        kept_rejections, from_failures, unsafe_failures = read_partial(args.failures)
+
+        # A comment can be last in one file and mid-file in the other. Each
+        # file only knows about its own tail, so the two answers are pooled
+        # before either is trusted: otherwise a comment is deleted from one
+        # file, marked finished by the other, and never comes back.
+        unsafe = unsafe_output | unsafe_failures
+        finished = (from_output | from_failures) - unsafe
+        kept_rows = [row for row in kept_rows if comment_key(row) not in unsafe]
+        kept_rejections = [
+            row for row in kept_rejections if comment_key(row) not in unsafe
+        ]
 
         remaining = [
             comment
@@ -279,16 +290,23 @@ def command_label(args) -> int:
             f"Resuming: {_plural(len(finished), 'comment')} already done, "
             f"{_plural(len(remaining), 'comment')} to go."
         )
-        if len(finished) and len(remaining) == len(comments):
-            _log("None of them match this input, so nothing was carried over.")
+
+        if finished and len(remaining) == len(comments):
+            raise InputError(
+                f"None of the comments already in {args.output} match this input. "
+                "Resuming would leave that file holding two different corpora. "
+                "Point --output somewhere else, or drop --resume to start again."
+            )
         if not remaining:
             _log("Nothing left to label.")
             return 0
 
-        # The survivors are put back before anything is appended, and put back
-        # atomically: resuming truncates files holding paid-for rows.
-        rewrite_atomically(args.output, OUTPUT_COLUMNS, kept_rows)
-        rewrite_atomically(args.failures, FAILURE_COLUMNS, kept_rejections)
+        # Held until after the confirmation. Rewriting here would destroy
+        # paid-for rows on a run that then stops saying "nothing was sent".
+        restore = [
+            (args.output, OUTPUT_COLUMNS, kept_rows),
+            (args.failures, FAILURE_COLUMNS, kept_rejections),
+        ]
         comments = remaining
 
     client = Client(model=args.model, max_retries=args.max_retries)
@@ -299,6 +317,10 @@ def command_label(args) -> int:
     )
     check_input_limit(estimate, args.max_input_tokens)
     confirm(estimate, args.yes)
+
+    # Only now, once the run is certainly going ahead.
+    for path, columns, rows in restore:
+        rewrite_atomically(path, columns, rows)
 
     def progress(done: int, total: int) -> None:
         if done == total or done % 25 == 0:
@@ -366,7 +388,10 @@ def command_label(args) -> int:
 def _read_labelled(path: str) -> list[dict]:
     """Read a file this tool wrote earlier, checking it is one."""
     try:
-        with open(path, newline="", encoding="utf-8") as handle:
+        # utf-8-sig, like the input reader: saving a labelled file from Excel
+        # as "CSV UTF-8" adds a byte-order mark, and reading it strictly made
+        # the tool accuse its own output of being the wrong kind of file.
+        with open(path, newline="", encoding="utf-8-sig") as handle:
             rows = list(csv.DictReader(handle))
     except FileNotFoundError as error:
         raise InputError(f"Labelled file not found: {path}") from error
@@ -432,19 +457,30 @@ def command_review(args) -> int:
     marks = {}
     if os.path.exists(args.output) and not args.overwrite:
         try:
-            with open(args.output, newline="", encoding="utf-8") as handle:
+            with open(args.output, newline="", encoding="utf-8-sig") as handle:
                 marks = reviewing.existing_marks(csv.DictReader(handle))
         except OSError as error:
             raise InputError(f"Could not read the existing {args.output}: {error}") from error
 
-    write_rows(
-        args.output, reviewing.REVIEW_COLUMNS, reviewing.to_review_rows(chosen, marks)
-    )
+    sheet = reviewing.to_review_rows(chosen, marks)
+    orphans = reviewing.orphaned_marks(chosen, marks)
+    write_rows(args.output, reviewing.REVIEW_COLUMNS, sheet + orphans)
+
     if marks:
+        carried = len(marks) - len(orphans)
         _log(
-            f"Wrote {args.output}, keeping {_plural(len(marks), 'mark')} already in it. "
-            "Pass --overwrite to start the sheet again."
+            f"Wrote {args.output}, carrying {_plural(carried, 'mark')} onto rows in "
+            "this sample."
         )
+        if orphans:
+            _log(
+                f"{_plural(len(orphans), 'marked row')} from the previous sheet is "
+                "not in this sample; kept at the end rather than discarded."
+                if len(orphans) == 1
+                else f"{_plural(len(orphans), 'marked row')} from the previous sheet "
+                "are not in this sample; kept at the end rather than discarded."
+            )
+        _log("Pass --overwrite to start the sheet again.")
     else:
         _log(f"Wrote {args.output} with an empty `agree` column to fill in.")
     return 0
