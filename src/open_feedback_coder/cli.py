@@ -9,8 +9,14 @@ import sys
 from . import __version__, codebook as codebook_module, label as label_step, propose as propose_step
 from .budget import BudgetExceeded, Cancelled, TokenCounter, check_input_limit, confirm
 from .codebook import Codebook, CodebookError, compare_with_proposal, proposal_record
-from .csv_io import FAILURE_COLUMNS, OUTPUT_COLUMNS, InputError, read_comments, write_rows
-from .llm import Client, ConfigError, ModelError
+from .csv_io import (
+    FAILURE_COLUMNS,
+    OUTPUT_COLUMNS,
+    InputError,
+    RowWriter,
+    read_comments,
+)
+from .llm import DEFAULT_MAX_RETRIES, Client, ConfigError, ModelError
 from .phrasing import plural as _plural
 
 DEFAULT_MAX_THEMES = 15
@@ -36,6 +42,17 @@ def _log(message: str = "", end: str = "\n") -> None:
         print(message, file=sys.stderr, end=end, flush=True)
     except (BrokenPipeError, OSError, ValueError):
         pass
+
+
+def _non_negative_int(value: str) -> int:
+    """An argparse type for counts where zero is a meaningful choice."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {number}")
+    return number
 
 
 def _positive_int(value: str) -> int:
@@ -100,6 +117,17 @@ def _add_model_arguments(parser: argparse.ArgumentParser) -> None:
         help="Stop before sending anything if the measured input exceeds N tokens.",
     )
     parser.add_argument(
+        "--max-retries",
+        type=_non_negative_int,
+        default=DEFAULT_MAX_RETRIES,
+        metavar="N",
+        help=(
+            f"How many times to try a call again after a connection error, a "
+            f"timeout or a rate limit (default {DEFAULT_MAX_RETRIES}). A quote "
+            "that cannot be verified is never retried; that is a different thing."
+        ),
+    )
+    parser.add_argument(
         "--yes", action="store_true", help="Skip the confirmation prompt before spending."
     )
 
@@ -131,7 +159,7 @@ def command_propose(args) -> int:
     )
     _report_input(comments, skipped, args)
 
-    client = Client(model=args.model)
+    client = Client(model=args.model, max_retries=args.max_retries)
     counter = TokenCounter(client.model)
 
     estimate = propose_step.build_estimate(
@@ -213,7 +241,7 @@ def command_label(args) -> int:
             "about what was changed in it."
         )
 
-    client = Client(model=args.model)
+    client = Client(model=args.model, max_retries=args.max_retries)
     counter = TokenCounter(client.model)
 
     estimate = label_step.build_estimate(
@@ -226,12 +254,21 @@ def command_label(args) -> int:
         if done == total or done % 25 == 0:
             _log(f"  labelled {done:,}/{total:,}", end="\r")
 
-    run = label_step.label_comments(
-        comments, book, client, concurrency=args.concurrency, on_progress=progress
-    )
-
-    write_rows(args.output, OUTPUT_COLUMNS, run.rows)
-    write_rows(args.failures, FAILURE_COLUMNS, run.rejections)
+    # Written as they arrive, so a run that dies partway leaves behind
+    # everything it had already paid for and checked.
+    with (
+        RowWriter(args.output, OUTPUT_COLUMNS) as labelled,
+        RowWriter(args.failures, FAILURE_COLUMNS) as rejected,
+    ):
+        run = label_step.label_comments(
+            comments,
+            book,
+            client,
+            concurrency=args.concurrency,
+            on_progress=progress,
+            on_rows=labelled.write,
+            on_rejections=rejected.write,
+        )
 
     dropped = run.dropped_assignments
 
@@ -261,6 +298,11 @@ def command_label(args) -> int:
         f"Tokens reported by the API: {run.usage.input_tokens:,} in, "
         f"{run.usage.output_tokens:,} out."
     )
+    if run.retries:
+        _log(
+            f"Retried {_plural(run.retries, 'call')} after a connection error, a "
+            "timeout or a rate limit."
+        )
     if run.comments_failed:
         _log(
             "Excluded comments are in the failures file with the reason and the "

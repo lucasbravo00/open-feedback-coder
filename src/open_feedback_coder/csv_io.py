@@ -185,6 +185,46 @@ def read_comments(
     )
 
 
+class RowWriter:
+    """Append rows to a CSV as they are produced, header first.
+
+    A labelling run makes one paid call per comment, and used to hold every
+    result in memory until the last one arrived. A run that died at comment
+    900 of 1000 wrote nothing, throwing away everything already paid for.
+    Flushing after each batch means whatever got as far as being checked is on
+    disk, and the partial file is a valid CSV.
+    """
+
+    def __init__(self, path: str | None, columns: list[str]):
+        self.path = path
+        self.columns = columns
+        self._handle = None
+        self._writer = None
+
+    def __enter__(self) -> "RowWriter":
+        if self.path is None:
+            return self
+        self._handle = open(self.path, "w", newline="", encoding="utf-8")
+        self._writer = csv.DictWriter(
+            self._handle, fieldnames=self.columns, extrasaction="ignore"
+        )
+        self._writer.writeheader()
+        self._handle.flush()
+        return self
+
+    def write(self, rows) -> None:
+        if self._writer is None or not rows:
+            return
+        self._writer.writerows(rows)
+        self._handle.flush()
+
+    def __exit__(self, *exception) -> None:
+        if self._handle is not None:
+            self._handle.close()
+            self._handle = None
+            self._writer = None
+
+
 def write_rows(path: str | None, columns: list[str], rows: list[dict]) -> None:
     """Write `rows` as a CSV with `columns`, or to stdout when path is None."""
     handle = sys.stdout if path is None else open(path, "w", newline="", encoding="utf-8")

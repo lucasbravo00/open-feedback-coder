@@ -66,6 +66,7 @@ class LabelRun:
     usage: Usage = field(default_factory=Usage)
     comments_labelled: int = 0
     comments_unassigned: int = 0
+    retries: int = 0
 
     @property
     def failures(self) -> list[dict]:
@@ -315,8 +316,15 @@ def label_comments(
     client: Client,
     concurrency: int = 4,
     on_progress=None,
+    on_rows=None,
+    on_rejections=None,
 ) -> LabelRun:
-    """Label every comment, preserving input order in the output."""
+    """Label every comment, preserving input order in the output.
+
+    `on_rows` and `on_rejections` are called with each comment's results as
+    they arrive, in input order, so a caller can put them on disk instead of
+    waiting for a run that has already been paid for to finish.
+    """
     codebook_text = render_codebook(codebook)
 
     def label_one(comment) -> CommentOutcome:
@@ -363,15 +371,22 @@ def label_comments(
         for index, outcome in enumerate(pool.map(label_one, comments), start=1):
             run.usage = run.usage + outcome.usage
             if outcome.failed:
-                run.rejections.append(outcome.failure)
+                rejections, rows = [outcome.failure], []
             else:
-                run.rejections.extend(outcome.dropped)
-                run.rows.extend(outcome.rows)
+                rejections, rows = outcome.dropped, outcome.rows
                 if outcome.rows and outcome.rows[0]["assignment"] == "unassigned":
                     run.comments_unassigned += 1
                 else:
                     run.comments_labelled += 1
+
+            run.rejections.extend(rejections)
+            run.rows.extend(rows)
+            if on_rows is not None:
+                on_rows(rows)
+            if on_rejections is not None:
+                on_rejections(rejections)
             if on_progress is not None:
                 on_progress(index, len(comments))
 
+    run.retries = getattr(client, "retries", 0)
     return run

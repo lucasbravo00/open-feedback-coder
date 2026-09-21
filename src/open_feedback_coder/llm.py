@@ -13,10 +13,43 @@ from __future__ import annotations
 
 import json
 import os
+import random
+import threading
+import time
 from dataclasses import dataclass
 
 MODEL_ENV_VAR = "OPENAI_MODEL"
 API_KEY_ENV_VAR = "OPENAI_API_KEY"
+
+DEFAULT_MAX_RETRIES = 3
+_BACKOFF_SECONDS = 1.0
+_BACKOFF_CAP_SECONDS = 30.0
+
+# Failures where trying again is the whole fix: no answer arrived, so there is
+# nothing to judge and nothing to invent.
+_TRANSIENT_TYPES = frozenset(
+    {
+        "APIConnectionError",
+        "APIConnectionTimeoutError",
+        "APITimeoutError",
+        "InternalServerError",
+        "RateLimitError",
+    }
+)
+_TRANSIENT_STATUS = frozenset({408, 409, 429})
+
+
+def is_transient(error: Exception) -> bool:
+    """Whether a failed call is worth making again.
+
+    Recognised by name and status code rather than by importing the SDK's
+    exception classes, so the rule can be tested without the SDK and does not
+    break when it reorganises them.
+    """
+    if type(error).__name__ in _TRANSIENT_TYPES:
+        return True
+    status = getattr(error, "status_code", None)
+    return isinstance(status, int) and (status in _TRANSIENT_STATUS or status >= 500)
 
 
 class ConfigError(Exception):
@@ -66,8 +99,18 @@ def resolve_model(explicit: str | None = None) -> str:
 class Client:
     """Calls one model with one schema at a time."""
 
-    def __init__(self, model: str | None = None, api_key: str | None = None):
+    def __init__(
+        self,
+        model: str | None = None,
+        api_key: str | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
+        sleeper=time.sleep,
+    ):
         self.model = resolve_model(model)
+        self.max_retries = max(0, max_retries)
+        self._sleep = sleeper
+        self._retries = 0
+        self._retry_lock = threading.Lock()
 
         key = api_key or os.environ.get(API_KEY_ENV_VAR, "").strip()
         if not key:
@@ -82,7 +125,37 @@ class Client:
                 "The `openai` package is not installed. Run `uv sync`."
             ) from error
 
-        self._client = OpenAI(api_key=key)
+        # Retries are ours, not the SDK's, so that the number of them is a
+        # number this tool can report rather than something happening quietly
+        # underneath it.
+        self._client = OpenAI(api_key=key, max_retries=0)
+
+    @property
+    def retries(self) -> int:
+        """How many times a call has been made again after a transient error."""
+        with self._retry_lock:
+            return self._retries
+
+    def _record_retry(self) -> None:
+        with self._retry_lock:
+            self._retries += 1
+
+    def _backoff(self, attempt: int) -> float:
+        delay = min(_BACKOFF_CAP_SECONDS, _BACKOFF_SECONDS * (2**attempt))
+        return delay + random.uniform(0, delay / 4)
+
+    def _create(self, **kwargs):
+        """Call the API, trying again while the failure is a transient one."""
+        attempt = 0
+        while True:
+            try:
+                return self._client.chat.completions.create(**kwargs)
+            except Exception as error:
+                if attempt >= self.max_retries or not is_transient(error):
+                    raise
+                self._record_retry()
+                self._sleep(self._backoff(attempt))
+                attempt += 1
 
     def complete_json(
         self,
@@ -93,7 +166,7 @@ class Client:
     ) -> tuple[dict, Usage]:
         """Send one request and return the parsed JSON object and token usage."""
         try:
-            response = self._client.chat.completions.create(
+            response = self._create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": system},
