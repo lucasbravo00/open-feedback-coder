@@ -6,7 +6,8 @@ labels do, so a theme cannot arrive illustrated by a quote that nobody wrote.
 
 import pytest
 
-from open_feedback_coder.propose import build_codebook, slugify
+from open_feedback_coder.prompts import PROPOSE_SYSTEM, render_corpus
+from open_feedback_coder.propose import build_codebook, resolve_comment, slugify
 
 
 @pytest.fixture
@@ -146,3 +147,109 @@ def test_duplicate_ids_are_made_unique(corpus):
 )
 def test_slugify(raw, expected):
     assert slugify(raw, fallback="fallback") == expected
+
+
+# The first real call to the API rejected all 26 example quotes. Not one was a
+# paraphrase: the corpus was rendered as "[7] text", so the model answered with
+# comment_id "[7]", and every lookup missed. These pin the fix.
+
+
+def test_the_corpus_puts_each_id_on_its_own_delimiter_line(make_comment):
+    rendered = render_corpus([make_comment("First one.", "7", 7)])
+
+    assert rendered == "<comment 7>\nFirst one.\n</comment>"
+    assert not rendered.startswith("[")
+
+
+def test_the_prompt_says_what_the_id_is_without_its_delimiters():
+    instructions = PROPOSE_SYSTEM.format(max_themes=15)
+
+    assert "<comment ID>" in instructions
+    assert "the id is 7" in instructions
+
+
+@pytest.mark.parametrize(
+    ("returned", "expected"),
+    [
+        ("7", "7"),
+        ("[7]", "7"),
+        ("<7>", "7"),
+        ("<comment 7>", "7"),
+        ("comment 7", "7"),
+        ("#7", "7"),
+        (" 7 ", "7"),
+        ('"7"', "7"),
+        ("7.", "7"),
+        ("R-900", "R-900"),
+        ("99", None),
+        ("", None),
+    ],
+)
+def test_a_comment_id_is_resolved_through_whatever_punctuation_came_with_it(
+    make_comment, returned, expected
+):
+    by_id = {
+        "7": make_comment("seventh", "7", 7),
+        "R-900": make_comment("nine hundredth", "R-900", 8),
+    }
+
+    comment = resolve_comment(by_id, returned)
+
+    assert (comment.comment_id if comment else None) == expected
+
+
+def test_an_id_that_really_contains_brackets_resolves_to_its_own_comment(make_comment):
+    """The literal value is tried first, so repair cannot hijack a real id."""
+    by_id = {
+        "[9]": make_comment("the bracketed one", "[9]", 9),
+        "9": make_comment("the plain one", "9", 10),
+    }
+
+    assert resolve_comment(by_id, "[9]").text == "the bracketed one"
+    assert resolve_comment(by_id, "9").text == "the plain one"
+
+
+def test_an_example_whose_id_came_back_wrapped_is_kept(corpus):
+    """The exact shape of the bug: a verbatim quote under a bracketed id."""
+    result = build_codebook(
+        {
+            "themes": [
+                {
+                    "id": "onboarding",
+                    "label": "Onboarding",
+                    "description": "",
+                    "examples": [
+                        {"comment_id": "[1]", "quote": "three weeks longer than promised"}
+                    ],
+                }
+            ]
+        },
+        corpus,
+        max_themes=15,
+    )
+
+    assert result.rejected_examples == []
+    example = result.codebook.themes[0].examples[0]
+    assert example.quote == "three weeks longer than promised"
+    # The id stored is the corpus's own, not the decorated one the model sent.
+    assert example.comment_id == "1"
+
+
+def test_a_wrapped_id_that_matches_nothing_is_still_rejected(corpus):
+    result = build_codebook(
+        {
+            "themes": [
+                {
+                    "id": "onboarding",
+                    "label": "Onboarding",
+                    "description": "",
+                    "examples": [{"comment_id": "[404]", "quote": "Nobody owned my onboarding"}],
+                }
+            ]
+        },
+        corpus,
+        max_themes=15,
+    )
+
+    assert result.codebook.themes[0].examples == []
+    assert result.rejected_examples[0]["reason"] == "unknown_comment_id"

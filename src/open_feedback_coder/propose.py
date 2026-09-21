@@ -17,6 +17,45 @@ from .prompts import PROPOSE_SCHEMA, PROPOSE_SYSTEM, render_corpus
 from .text import locate_quote
 
 _NON_SLUG = re.compile(r"[^a-z0-9]+")
+# Punctuation a model may carry over from however the corpus was delimited.
+_ID_WRAPPERS = re.compile(r"""^[\s\[\]<>#()"'.,:;]+|[\s\[\]<>#()"'.,:;]+$""")
+_ID_KEYWORD = re.compile(r"^(?:comment|id|no|num|number)\b[\s:.#-]*", re.IGNORECASE)
+
+
+def comment_id_candidates(value: object) -> list[str]:
+    """Ways a model might have written a comment id, literal value first.
+
+    Formatting repair only, in the same spirit as `slugify`. The literal value
+    is always tried before any repair, so an id that genuinely contains
+    brackets or the word "comment" still resolves to its own comment. Nothing
+    here invents an id: a value that matches no comment after all of these is
+    reported as unknown rather than guessed at.
+    """
+    text = str(value)
+    candidates = [text, text.strip()]
+
+    unwrapped = _ID_WRAPPERS.sub("", text)
+    candidates.append(unwrapped)
+
+    without_keyword = _ID_KEYWORD.sub("", unwrapped).strip()
+    candidates.append(_ID_WRAPPERS.sub("", without_keyword))
+
+    seen: set[str] = set()
+    ordered = []
+    for candidate in candidates:
+        if candidate and candidate not in seen:
+            seen.add(candidate)
+            ordered.append(candidate)
+    return ordered
+
+
+def resolve_comment(by_id: dict, value: object):
+    """Return the comment a model-supplied id points at, or None."""
+    for candidate in comment_id_candidates(value):
+        comment = by_id.get(candidate)
+        if comment is not None:
+            return comment
+    return None
 
 
 def slugify(value: str, fallback: str) -> str:
@@ -92,8 +131,9 @@ def build_codebook(response: dict, comments, max_themes: int) -> ProposeResult:
         examples: list[Example] = []
         for raw_example in raw_theme.get("examples") or []:
             quote = str(raw_example.get("quote", "") or "")
-            comment_id = str(raw_example.get("comment_id", "") or "").strip()
-            comment = by_id.get(comment_id)
+            raw_id = raw_example.get("comment_id", "") or ""
+            comment = resolve_comment(by_id, raw_id)
+            comment_id = comment.comment_id if comment is not None else str(raw_id).strip()
 
             if comment is None:
                 rejected.append(

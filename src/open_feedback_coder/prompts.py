@@ -44,6 +44,10 @@ onboarding_support.
 what belongs in the theme and what does not.
 - Give each theme exactly two example quotes drawn from different comments, \
 each with the id of the comment it came from.
+- Each comment below is introduced by a line reading <comment ID> and closed \
+by a line reading </comment>. The comment_id you return is that ID on its own: \
+for a comment introduced by <comment 7>, the id is 7, not <comment 7> and not \
+<7>.
 - {_QUOTE_RULE}
 
 The person who receives this codebook will edit it before anything is \
@@ -131,8 +135,16 @@ LABEL_SCHEMA = {
 
 
 def render_corpus(comments) -> str:
-    """Render comments for the proposal prompt, one block per comment."""
-    return "\n\n".join(f"[{comment.comment_id}] {comment.text}" for comment in comments)
+    """Render comments for the proposal prompt, one block per comment.
+
+    The id sits alone on its own delimiter line. It used to be a bracketed
+    prefix on the text, `[7] ...`, and models answered with the id "[7]",
+    which is a fair reading of what they were shown.
+    """
+    return "\n\n".join(
+        f"<comment {comment.comment_id}>\n{comment.text}\n</comment>"
+        for comment in comments
+    )
 
 
 def render_codebook(codebook) -> str:
