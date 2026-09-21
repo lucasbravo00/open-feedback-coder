@@ -538,7 +538,12 @@ def test_a_byte_order_mark_does_not_erase_every_comment_key(tmp_path):
 
 
 def test_the_same_file_spelled_two_ways_is_still_one_file(project, tmp_path):
+    """Plain string equality missed every alias for one path."""
     run, client, _ = project
+    # Built as text, not through pathlib, which would normalise it away.
+    aliased = f"{tmp_path}/sub/../same.csv"
+    (tmp_path / "sub").mkdir()
+    assert aliased != str(tmp_path / "same.csv")
 
     assert cli.main(
         [
@@ -547,8 +552,22 @@ def test_the_same_file_spelled_two_ways_is_still_one_file(project, tmp_path):
             "--text-column", "answer",
             "--codebook", str(tmp_path / "codebook.yaml"),
             "--output", str(tmp_path / "same.csv"),
-            "--failures", str(tmp_path / "." / "same.csv"),
+            "--failures", aliased,
             "--yes",
         ]
     ) == 1
     assert client.asked == []
+
+
+def test_same_file_sees_through_the_ways_a_path_can_be_written(tmp_path):
+    from open_feedback_coder.csv_io import same_file
+
+    target = tmp_path / "out.csv"
+    target.write_text("x", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+
+    assert same_file(str(target), f"{tmp_path}/./out.csv")
+    assert same_file(str(target), f"{tmp_path}/sub/../out.csv")
+    assert not same_file(str(target), str(tmp_path / "other.csv"))
+    assert not same_file(str(target), None)
+    assert not same_file(None, None)
