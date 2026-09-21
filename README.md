@@ -272,8 +272,19 @@ spend anything:
 Only Q12 was asked as an open question, and only its answers read like the
 survey comments this tool is built for. The other 277 are mostly one or two
 words, and a codebook induced over all 318 is dominated by names of academic
-disciplines. Filter to `question_id == Q12` before drawing any conclusion, and
-note that 41 comments is a small corpus.
+disciplines. So write out that question on its own:
+
+```bash
+uv run python scripts/download_dataset.py --question Q12
+```
+
+Then run the tool over it, remembering that 41 comments is a small corpus:
+
+```bash
+uv run ofc propose --input data/ospo_open_responses_Q12.csv \
+                   --text-column response \
+                   --id-column response_id
+```
 
 **This is not workplace feedback.** It is a survey of academic open source
 contributors. It is here for one reason: to run the pipeline over real

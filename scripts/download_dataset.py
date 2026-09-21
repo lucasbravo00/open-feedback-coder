@@ -16,9 +16,14 @@ Where the data actually lives, which is not obvious from the paper:
           That deposit holds the authors' R analysis only. Its data/ directory
           is empty on purpose, so it is not a source for the survey answers.
 
+Only one of the survey's eight free-text questions, Q12, was asked as an open
+question; the rest are write-in options answered in a word or two. The script
+prints the breakdown, and --question writes just one question's answers.
+
 Usage:
     python scripts/download_dataset.py
     python scripts/download_dataset.py --archive ~/Downloads/dryad_data_final.tar.gz
+    python scripts/download_dataset.py --question Q12
 """
 
 from __future__ import annotations
@@ -208,6 +213,11 @@ def main() -> int:
         "--out-dir", default="data", metavar="DIR", help="Where to write the CSV (default: data)."
     )
     parser.add_argument(
+        "--question",
+        metavar="ID",
+        help="Keep only one question's answers, for example Q12.",
+    )
+    parser.add_argument(
         "--dump-paragraphs",
         action="store_true",
         help="Print the raw paragraphs of the Word file and stop, for inspection.",
@@ -239,7 +249,28 @@ def main() -> int:
             "--dump-paragraphs to see what it actually contains."
         )
 
-    out_path = os.path.join(args.out_dir, "ospo_open_responses.csv")
+    if args.question:
+        wanted = args.question.strip().upper()
+        available = sorted(
+            {row["question_id"] for row in rows if row["question_id"]},
+            key=lambda value: int(value.lstrip("Q") or 0),
+        )
+        kept = [row for row in rows if row["question_id"].upper() == wanted]
+        if not kept:
+            raise SystemExit(
+                f"No answers found for {args.question!r}. "
+                f"This file has: {', '.join(available)}."
+            )
+        print(
+            f"Keeping {len(kept)} of {len(rows)} answers ({wanted} only).",
+            file=sys.stderr,
+        )
+        rows = kept
+        for index, row in enumerate(rows, start=1):
+            row["response_id"] = str(index)
+
+    suffix = f"_{args.question.strip().upper()}" if args.question else ""
+    out_path = os.path.join(args.out_dir, f"ospo_open_responses{suffix}.csv")
     columns = ["response_id", "question_id", "question_text", "response"]
     with open(out_path, "w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns)
@@ -260,13 +291,14 @@ def main() -> int:
     else:
         print(file=sys.stderr)
         print(summarise(rows), file=sys.stderr)
-        print(
-            "\nMost of these questions are write-in options answered in a word or "
-            "two. Q12 is the one asked as an open question, and its answers read "
-            "like survey comments. Decide which of them you want before you run "
-            "anything over the file.",
-            file=sys.stderr,
-        )
+        if not args.question:
+            print(
+                "\nMost of these questions are write-in options answered in a word "
+                "or two. Q12 is the one asked as an open question, and its answers "
+                "read like survey comments. Re-run with --question Q12 to write "
+                "only those.",
+                file=sys.stderr,
+            )
     print(
         "\nThis data is CC0 (Scarlett, Curty, Gomez et al., 2026, "
         f"https://doi.org/{DATASET_DOI}). It is survey data about open source "
