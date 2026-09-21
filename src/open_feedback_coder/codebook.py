@@ -228,12 +228,18 @@ class ApprovalRecord:
     proposed: int
     kept: int
     relabelled: int
+    redescribed: int
     removed: int
     added: int
 
     @property
     def untouched(self) -> bool:
-        return self.relabelled == 0 and self.removed == 0 and self.added == 0
+        return (
+            self.relabelled == 0
+            and self.redescribed == 0
+            and self.removed == 0
+            and self.added == 0
+        )
 
     def describe(self) -> str:
         if self.untouched:
@@ -244,6 +250,8 @@ class ApprovalRecord:
         parts = [f"{self.kept} kept as proposed"]
         if self.relabelled:
             parts.append(f"{self.relabelled} relabelled")
+        if self.redescribed:
+            parts.append(f"{self.redescribed} with the description rewritten")
         if self.removed:
             parts.append(f"{self.removed} deleted")
         if self.added:
@@ -263,30 +271,39 @@ def compare_with_proposal(codebook: Codebook) -> ApprovalRecord | None:
     if not isinstance(proposed, list) or not proposed:
         return None
 
-    proposed_labels = {}
+    original = {}
     for entry in proposed:
         if isinstance(entry, dict) and entry.get("id"):
-            proposed_labels[str(entry["id"])] = str(entry.get("label", ""))
+            original[str(entry["id"])] = entry
 
-    if not proposed_labels:
+    if not original:
         return None
 
-    kept = relabelled = added = 0
+    kept = relabelled = redescribed = added = 0
     for theme in codebook.themes:
-        if theme.id not in proposed_labels:
+        entry = original.get(theme.id)
+        if entry is None:
             added += 1
-        elif proposed_labels[theme.id] == theme.label:
-            kept += 1
-        else:
+            continue
+        if str(entry.get("label", "")) != theme.label:
             relabelled += 1
+            continue
+        # A description is sent to the model on every labelling call, so
+        # rewriting one changes what the run finds. Records written before
+        # descriptions were kept have none, and are not guessed at.
+        if "description" in entry and str(entry.get("description") or "") != theme.description:
+            redescribed += 1
+            continue
+        kept += 1
 
     approved_ids = codebook.theme_ids()
-    removed = sum(1 for theme_id in proposed_labels if theme_id not in approved_ids)
+    removed = sum(1 for theme_id in original if theme_id not in approved_ids)
 
     return ApprovalRecord(
-        proposed=len(proposed_labels),
+        proposed=len(original),
         kept=kept,
         relabelled=relabelled,
+        redescribed=redescribed,
         removed=removed,
         added=added,
     )
@@ -294,7 +311,10 @@ def compare_with_proposal(codebook: Codebook) -> ApprovalRecord | None:
 
 def proposal_record(codebook: Codebook) -> list[dict]:
     """The `source.proposed` value for a freshly proposed codebook."""
-    return [{"id": theme.id, "label": theme.label} for theme in codebook.themes]
+    return [
+        {"id": theme.id, "label": theme.label, "description": theme.description}
+        for theme in codebook.themes
+    ]
 
 
 def load(path: str) -> Codebook:

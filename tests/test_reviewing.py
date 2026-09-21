@@ -150,3 +150,103 @@ def test_ofc_counts_reports_on_a_real_labelled_file(tmp_path, capsys):
     assert "4 comments" in printed
     assert "count labels, not people" in printed
     assert counts_path.exists()
+
+
+# The sample is seeded so the same rows come back across several sittings.
+# Re-running used to rewrite the sheet blank, destroying exactly the work the
+# command exists to collect.
+
+
+def write_labelled(tmp_path, rows):
+    path = tmp_path / "labelled.csv"
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def read_sheet(path):
+    with open(path, newline="", encoding="utf-8") as handle:
+        return list(csv.DictReader(handle))
+
+
+def mark_the_sheet(path, agree="yes", notes="the quote fits"):
+    sheet = read_sheet(path)
+    for entry in sheet:
+        entry["agree"] = agree
+        entry["notes"] = notes
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=REVIEW_COLUMNS)
+        writer.writeheader()
+        writer.writerows(sheet)
+
+
+def test_marks_already_made_survive_a_re_run(tmp_path, capsys):
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    arguments = ["review", "--labelled", str(labelled), "--sample", "5", "--output", str(output)]
+
+    cli.main(arguments)
+    mark_the_sheet(output)
+
+    cli.main(arguments)
+
+    sheet = read_sheet(output)
+    assert len(sheet) == 5
+    assert all(entry["agree"] == "yes" for entry in sheet)
+    assert all(entry["notes"] == "the quote fits" for entry in sheet)
+    assert "keeping 5 marks already in it" in capsys.readouterr().err
+
+
+def test_overwrite_starts_the_sheet_again(tmp_path):
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    arguments = ["review", "--labelled", str(labelled), "--sample", "5", "--output", str(output)]
+
+    cli.main(arguments)
+    mark_the_sheet(output)
+
+    cli.main(arguments + ["--overwrite"])
+
+    assert all(entry["agree"] == "" for entry in read_sheet(output))
+
+
+def test_a_larger_sample_keeps_the_marks_on_the_rows_it_repeats(tmp_path):
+    """The seed is fixed, so a bigger sample contains work already done."""
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    base = ["review", "--labelled", str(labelled), "--output", str(output)]
+
+    cli.main(base + ["--sample", "5"])
+    mark_the_sheet(output, agree="no", notes="wrong theme")
+    marked = {entry["comment_id"] for entry in read_sheet(output)}
+
+    cli.main(base + ["--sample", "20"])
+
+    sheet = read_sheet(output)
+    assert len(sheet) == 20
+    kept = [entry for entry in sheet if entry["comment_id"] in marked]
+    assert kept, "the smaller sample should be inside the larger one"
+    assert all(entry["agree"] == "no" for entry in kept)
+    assert all(
+        entry["agree"] == "" for entry in sheet if entry["comment_id"] not in marked
+    )
+
+
+def test_counts_refuses_the_review_sheet_it_just_wrote(tmp_path):
+    """review.csv has comment_id, assignment and quote but no theme_id, so it
+    used to be counted as a single fabricated theme."""
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    cli.main(["review", "--labelled", str(labelled), "--sample", "5", "--output", str(output)])
+
+    assert cli.main(["counts", "--labelled", str(output)]) == 1
+
+
+def test_review_refuses_the_review_sheet_it_just_wrote(tmp_path):
+    labelled = write_labelled(tmp_path, ROWS)
+    output = tmp_path / "review.csv"
+    cli.main(["review", "--labelled", str(labelled), "--sample", "5", "--output", str(output)])
+
+    assert cli.main(["review", "--labelled", str(output), "--output", str(tmp_path / "x.csv")]) == 1

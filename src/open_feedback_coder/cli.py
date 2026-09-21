@@ -196,6 +196,11 @@ def command_propose(args) -> int:
         f"Tokens reported by the API: {result.usage.input_tokens:,} in, "
         f"{result.usage.output_tokens:,} out."
     )
+    if getattr(client, "retries", 0):
+        _log(
+            f"Retried {_plural(client.retries, 'call')} after a connection error, a "
+            "timeout or a rate limit."
+        )
 
     result.codebook = Codebook(
         themes=result.codebook.themes,
@@ -229,6 +234,12 @@ def command_propose(args) -> int:
 
 
 def command_label(args) -> int:
+    if args.output and args.output == args.failures:
+        raise InputError(
+            "--output and --failures cannot be the same file: both are opened for "
+            "writing at once and would truncate each other. Nothing was sent."
+        )
+
     book = codebook_module.load(args.codebook)
 
     comments, skipped = read_comments(
@@ -331,7 +342,11 @@ def _read_labelled(path: str) -> list[dict]:
     if not rows:
         raise InputError(f"{path} has no rows.")
 
-    missing = [column for column in ("comment_id", "assignment", "quote") if column not in rows[0]]
+    # theme_id is the column that tells a labelled file from every other file
+    # this tool writes: the review sheet carries comment_id, assignment and
+    # quote too, and counting it merges every theme into one fabricated row.
+    required = ("comment_id", "assignment", "theme_id", "theme_label", "quote")
+    missing = [column for column in required if column not in rows[0]]
     if missing:
         raise InputError(
             f"{path} does not look like a file `ofc label` wrote: "
@@ -379,8 +394,27 @@ def command_review(args) -> int:
         "they chose would look like validation, and it is not."
     )
 
-    write_rows(args.output, reviewing.REVIEW_COLUMNS, reviewing.to_review_rows(chosen))
-    _log(f"Wrote {args.output} with an empty `agree` column to fill in.")
+    # The sample is seeded so the same rows come back across several sittings.
+    # Rewriting the sheet blank on the second sitting would throw away exactly
+    # the work this command exists to collect.
+    marks = {}
+    if os.path.exists(args.output) and not args.overwrite:
+        try:
+            with open(args.output, newline="", encoding="utf-8") as handle:
+                marks = reviewing.existing_marks(csv.DictReader(handle))
+        except OSError as error:
+            raise InputError(f"Could not read the existing {args.output}: {error}") from error
+
+    write_rows(
+        args.output, reviewing.REVIEW_COLUMNS, reviewing.to_review_rows(chosen, marks)
+    )
+    if marks:
+        _log(
+            f"Wrote {args.output}, keeping {_plural(len(marks), 'mark')} already in it. "
+            "Pass --overwrite to start the sheet again."
+        )
+    else:
+        _log(f"Wrote {args.output} with an empty `agree` column to fill in.")
     return 0
 
 
@@ -488,6 +522,12 @@ def build_parser() -> argparse.ArgumentParser:
     review_parser.add_argument(
         "--output", default="review.csv", metavar="FILE", help="Where to write the sheet."
     )
+    review_parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Start the sheet again, discarding any agree and notes already in it. "
+        "Without this, marks already made are carried forward.",
+    )
     review_parser.set_defaults(handler=command_review)
 
     return parser
@@ -501,6 +541,10 @@ def main(argv: list[str] | None = None) -> int:
         _log(str(error))
         return 130
     except (InputError, CodebookError, ConfigError, BudgetExceeded, ModelError) as error:
+        _log(f"error: {error}")
+        return 1
+    except OSError as error:
+        # A path that cannot be written, a full disk, a permission denied.
         _log(f"error: {error}")
         return 1
 

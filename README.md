@@ -104,7 +104,7 @@ uv run ofc label --input responses.csv \
                  --codebook codebook.yaml
 ```
 
-`ofc label` reports what you changed — "15 proposed, 9 kept as proposed, 3
+`ofc label` reports what you changed — "15 proposed, 6 kept as proposed, 3
 relabelled, 6 deleted" — because a codebook a person approved should be able
 to show it, not just assert it. Rows are written as they are checked, so a run
 interrupted at comment 900 of 1000 leaves a valid file of the first 900 rather

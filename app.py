@@ -19,9 +19,15 @@ import yaml
 import pandas as pd
 import streamlit as st
 
-from open_feedback_coder import label as label_step, propose as propose_step
+from open_feedback_coder import __version__, label as label_step, propose as propose_step
 from open_feedback_coder.budget import TokenCounter
-from open_feedback_coder.codebook import CodebookError, from_dict, to_yaml
+from open_feedback_coder.codebook import (
+    Codebook,
+    CodebookError,
+    from_dict,
+    proposal_record,
+    to_yaml,
+)
 from open_feedback_coder.csv_io import (
     FAILURE_COLUMNS,
     OUTPUT_COLUMNS,
@@ -200,6 +206,8 @@ if uploaded is None:
 
 result = st.session_state.get("proposal")
 
+proposed_source: dict = {}
+
 if uploaded is not None:
     starting_themes = uploaded.themes
     examples_to_show = []
@@ -210,6 +218,13 @@ if uploaded is not None:
 elif result is not None:
     starting_themes = result.codebook.themes
     examples_to_show = result.codebook.themes
+    proposed_source = {
+        "tool_version": __version__,
+        "text_column": text_column,
+        "comments_analysed": len(comments),
+        "model": client.model,
+        "proposed": proposal_record(result.codebook),
+    }
     st.info(
         f"{len(starting_themes)} themes proposed. "
         f"{sum(len(t.examples) for t in starting_themes)} example quotes verified "
@@ -254,6 +269,12 @@ try:
 except CodebookError as error:
     st.error(str(error))
     st.stop()
+
+# Carry the run record through. Without it the downloaded codebook loses which
+# model proposed it, over what corpus, and what the proposal was - so `ofc
+# label` could say nothing about what was changed in a codebook edited here.
+inherited_source = dict(uploaded.source) if uploaded is not None else dict(proposed_source)
+approved = Codebook(themes=approved.themes, source=inherited_source)
 
 # Results computed against a different set of themes are no longer results.
 codebook_fingerprint = tuple(

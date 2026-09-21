@@ -213,3 +213,34 @@ def test_ofc_label_writes_the_dropped_repeat_to_the_failures_file(
     for row in rows:
         start, end = int(row["quote_start"]), int(row["quote_end"])
         assert row["comment_text"][start:end] == row["quote"]
+
+
+def test_one_path_for_both_outputs_is_refused_before_anything_is_sent(tmp_path, monkeypatch):
+    """Two writers on one path truncate each other, and the run had already
+    been paid for by the time anyone could tell."""
+    called = []
+    monkeypatch.setattr(
+        cli, "Client", lambda *a, **k: called.append(1) or ScriptedClient({})
+    )
+
+    input_path = tmp_path / "survey.csv"
+    input_path.write_text("answer\nsomething\n", encoding="utf-8")
+    codebook_path = tmp_path / "codebook.yaml"
+    codebook_path.write_text("themes:\n  - id: pay\n    label: Pay\n", encoding="utf-8")
+    both = tmp_path / "same.csv"
+
+    exit_code = cli.main(
+        [
+            "label",
+            "--input", str(input_path),
+            "--text-column", "answer",
+            "--codebook", str(codebook_path),
+            "--output", str(both),
+            "--failures", str(both),
+            "--yes",
+        ]
+    )
+
+    assert exit_code == 1
+    assert called == [], "no client should even be built"
+    assert not both.exists()

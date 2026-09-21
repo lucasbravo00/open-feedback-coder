@@ -86,14 +86,19 @@ class Counts:
                 f"{theme.valences.get('neutral', 0):>4,}"
             )
 
+        assignments = sum(theme.comments for theme in self.themes)
+
         lines.append("")
         lines.append(
             f"{self.comments:,} comments: {self.comments_labelled:,} with at least one "
             f"theme, {self.comments_unassigned:,} with none. {self.rows:,} rows."
         )
+        # Stating the two numbers beats asserting a relationship between them:
+        # a corpus where every labelled comment carries exactly one theme makes
+        # them equal, and claiming otherwise would be a number that is wrong.
         lines.append(
-            "A comment can carry up to three themes, so the theme column sums to "
-            "more than the number of comments."
+            f"{assignments:,} theme assignments across {self.comments_labelled:,} "
+            "labelled comments, since a comment can carry up to three."
         )
         return "\n".join(lines)
 

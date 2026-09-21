@@ -110,7 +110,24 @@ def test_the_rendered_table_states_what_it_is_not():
     assert "4 comments" in rendered
     assert "3 with at least one theme" in rendered
     assert "1 with none" in rendered
-    assert "sums to more than the number of comments" in rendered
+    assert "5 theme assignments across 3 labelled comments" in rendered
+
+
+def test_the_footer_states_numbers_rather_than_asserting_a_relationship():
+    """It used to claim the theme column always sums to more than the
+    comment count. When every labelled comment carries exactly one theme,
+    that claim is simply false, and a false number is the one thing this
+    tool is supposed not to print."""
+    one_each = [
+        row("1", "primary", "pay", "Pay", "negative"),
+        row("2", "primary", "pay", "Pay", "negative"),
+        row("3", "primary", "onboarding", "Onboarding", "neutral"),
+    ]
+
+    rendered = count(one_each).render()
+
+    assert "3 theme assignments across 3 labelled comments" in rendered
+    assert "more than" not in rendered
 
 
 def test_the_csv_rows_carry_every_column(tmp_path):

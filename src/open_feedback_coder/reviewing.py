@@ -12,6 +12,10 @@ It deliberately stops there. Turning those marks into an agreement rate would
 produce a number that looks like validation, computed on a sample the user
 chose, against a standard that is one person's reading. Anyone can count their
 own ticks; this tool will not do it for them and give the result a name.
+
+What it must not do is lose them. The sample is fixed by seed precisely so
+that the same rows come back across several sittings, so re-running has to
+carry forward what was already written in.
 """
 
 from __future__ import annotations
@@ -51,22 +55,47 @@ def sample(rows, size: int, seed: int = 0, include_unassigned: bool = False) -> 
     return chosen
 
 
-def to_review_rows(rows) -> list[dict]:
-    """Lay a sample out for marking, with the two columns left empty."""
-    return [
-        {
-            "comment_id": row.get("comment_id", ""),
-            "row_number": row.get("row_number", ""),
-            "assignment": row.get("assignment", ""),
-            "theme_label": row.get("theme_label", ""),
-            "valence": row.get("valence", ""),
-            "quote": row.get("quote", ""),
-            "comment_text": row.get("comment_text", ""),
-            "agree": "",
-            "notes": "",
-        }
-        for row in rows
-    ]
+def mark_key(row) -> tuple:
+    """What identifies one line of a review sheet across re-runs."""
+    return (
+        str(row.get("comment_id", "")),
+        str(row.get("row_number", "")),
+        str(row.get("assignment", "")),
+        str(row.get("theme_label", "")),
+    )
+
+
+def existing_marks(rows) -> dict:
+    """The agree and notes already written into a sheet, keyed by line."""
+    marks = {}
+    for row in rows:
+        agree = str(row.get("agree", "") or "").strip()
+        notes = str(row.get("notes", "") or "").strip()
+        if agree or notes:
+            marks[mark_key(row)] = {"agree": agree, "notes": notes}
+    return marks
+
+
+def to_review_rows(rows, marks: dict | None = None) -> list[dict]:
+    """Lay a sample out for marking, carrying forward any marks already made."""
+    marks = marks or {}
+    sheet = []
+    for row in rows:
+        mark = marks.get(mark_key(row), {})
+        sheet.append(
+            {
+                "comment_id": row.get("comment_id", ""),
+                "row_number": row.get("row_number", ""),
+                "assignment": row.get("assignment", ""),
+                "theme_label": row.get("theme_label", ""),
+                "valence": row.get("valence", ""),
+                "quote": row.get("quote", ""),
+                "comment_text": row.get("comment_text", ""),
+                "agree": mark.get("agree", ""),
+                "notes": mark.get("notes", ""),
+            }
+        )
+    return sheet
 
 
 def render(rows, width: int = 88) -> str:

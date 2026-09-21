@@ -246,3 +246,61 @@ def test_changing_an_id_reads_as_a_deletion_and_an_addition():
     record = compare_with_proposal(book)
 
     assert (record.kept, record.relabelled, record.removed, record.added) == (0, 0, 1, 1)
+
+
+def test_rewriting_only_a_description_is_not_reported_as_unedited():
+    """A description goes into every labelling call, so rewriting one changes
+    what the run finds. It used to be invisible to the record."""
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    book = Codebook(
+        themes=[Theme(id="pay", label="Pay", description="Only base salary, not benefits.")],
+        source={"proposed": [{"id": "pay", "label": "Pay", "description": "Money."}]},
+    )
+
+    record = compare_with_proposal(book)
+
+    assert not record.untouched
+    assert record.redescribed == 1
+    assert record.kept == 0
+    assert "description rewritten" in record.describe()
+
+
+def test_a_record_written_before_descriptions_were_kept_does_not_guess():
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    book = Codebook(
+        themes=[Theme(id="pay", label="Pay", description="anything at all")],
+        source={"proposed": [{"id": "pay", "label": "Pay"}]},
+    )
+
+    record = compare_with_proposal(book)
+
+    assert record.untouched
+    assert record.redescribed == 0
+
+
+def test_the_parts_of_the_record_always_add_up():
+    """kept + relabelled + redescribed + added is the size of the codebook,
+    and kept + relabelled + redescribed + removed is the size of the proposal."""
+    from open_feedback_coder.codebook import Codebook, Theme, compare_with_proposal
+
+    book = Codebook(
+        themes=[
+            Theme(id="pay", label="Pay", description="d"),
+            Theme(id="onboarding", label="Getting started", description="d"),
+            Theme(id="hybrid", label="Hybrid", description="d"),
+        ],
+        source={
+            "proposed": [
+                {"id": "pay", "label": "Pay", "description": "d"},
+                {"id": "onboarding", "label": "Onboarding", "description": "d"},
+                {"id": "workload", "label": "Workload", "description": "d"},
+            ]
+        },
+    )
+
+    record = compare_with_proposal(book)
+
+    assert record.kept + record.relabelled + record.redescribed + record.added == 3
+    assert record.kept + record.relabelled + record.redescribed + record.removed == record.proposed
